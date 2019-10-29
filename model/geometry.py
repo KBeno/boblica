@@ -43,6 +43,12 @@ class Point:
                          y=self.y + other.y,
                          z=self.z + other.z)
 
+    def __eq__(self, other):
+        if self.x == other.x and self.y == other.y and self.z == other.z:
+            return True
+        else:
+            return False
+
 
 class Vector:
 
@@ -163,7 +169,7 @@ class Rectangle:
 
         :return: a list of all vertices as Point instances
         """
-        return self.side.points()[::-1] + [point + self.height_vector() for point in self.side.points()]
+        return self.side.points() + [point + self.height_vector() for point in self.side.points()[::-1]]
 
     def to_lines(self) -> List[Line]:
         """
@@ -171,7 +177,7 @@ class Rectangle:
         :return: a list of all edges as Line instances
         """
         points = self.to_points()
-        return [Line(s, e) for s, e in zip(points, points[-1:] + points[:-1])]
+        return [Line(s, e) for s, e in zip(points, points[1:] + points[:1])]
 
 
 class Box:
@@ -265,9 +271,10 @@ class Face:
             return abs(area)
 
     def perimeter(self):
-        points1 = self.vertices
-        points2 = self.vertices[1:] + self.vertices[:1]
-        return sum([(p2 - p1).length() for p1, p2 in zip(points1, points2)])
+        return sum([side.length() for side in self.to_lines()])
+
+    def to_lines(self):
+        return [Line(s, e) for s, e in zip(self.vertices, self.vertices[1:] + self.vertices[:1])]
 
 
 def move(obj: Union[Point, Line, Rectangle, Box], vector: Vector, inplace=False):
