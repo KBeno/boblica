@@ -25,8 +25,9 @@ class GlobalGeometryRules:
 
 class OpaqueMaterial:
     def __init__(self, name: str, dbid: float, thickness: float, conductivity: float, density: float,
-                 specific_heat: float, roughness: str = None, thermal_absorptance: float = None,
-                 solar_absorptance: float = None, visible_absorptance: float = None):
+                 specific_heat: float,
+                 transport_scenario: float, disposal_scenario: float, cutting_waste: float, life_time: int,
+                 roughness: str, thermal_absorptance: float, solar_absorptance: float, visible_absorptance: float):
         self.Name = name
         self.DbId = dbid
         self.IuId = str(uuid.uuid1())  # Internal Unique Identifier
@@ -38,6 +39,11 @@ class OpaqueMaterial:
         self.ThermalAbsorptance = thermal_absorptance
         self.SolarAbsorptance = solar_absorptance
         self.VisibleAbsorptance = visible_absorptance
+        # Life Cycle properties
+        self.TransportScenario = transport_scenario
+        self.DisposalScenario = disposal_scenario
+        self.CuttingWaste = cutting_waste
+        self.LifeTime = life_time
 
     def __str__(self):
         return self.Name + " (OpaqueMaterial)"
@@ -45,7 +51,8 @@ class OpaqueMaterial:
     # TODO move to base class or tools module
     def describe(self):
         description = 'Name:                {info}\n'.format(info=self.Name) + \
-                      'Id:                  {info}\n'.format(info=self.DbId) + \
+                      'Database Id:         {info}\n'.format(info=self.DbId) + \
+                      'Internal Id:         {info}\n'.format(info=self.IuId) + \
                       'Roughness:           {info}\n'.format(info=self.Roughness) + \
                       'Thickness:           {info}\n'.format(info=self.Thickness) + \
                       'Conductivity:        {info}\n'.format(info=self.Conductivity) + \
@@ -53,7 +60,11 @@ class OpaqueMaterial:
                       'Specific Heat:       {info}\n'.format(info=self.SpecificHeat) + \
                       'Thermal Absorptance: {info}\n'.format(info=self.ThermalAbsorptance) + \
                       'Solar Absorptance:   {info}\n'.format(info=self.SolarAbsorptance) + \
-                      'Visible Absorptance: {info}\n'.format(info=self.VisibleAbsorptance)
+                      'Visible Absorptance: {info}\n'.format(info=self.VisibleAbsorptance) + \
+                      'Transport Scenario:  {info}\n'.format(info=self.TransportScenario) + \
+                      'Disposal Scenario:   {info}\n'.format(info=self.DisposalScenario) + \
+                      'Cutting Waste:       {info}\n'.format(info=self.CuttingWaste) + \
+                      'Life Time:           {info}\n'.format(info=self.LifeTime)
         return description
 
     def get_ref(self):
@@ -61,7 +72,8 @@ class OpaqueMaterial:
 
 
 class WindowMaterial:
-    def __init__(self, name: str, typ: str, glazing_id: float, frame_id: float, u_value: float, g_value: float):
+    def __init__(self, name: str, typ: str, glazing_id: float, frame_id: float, u_value: float, g_value: float,
+                 transport_scenario: float, disposal_scenario: float, cutting_waste: float, life_time: int):
         self.Name = name
         self.IuId = str(uuid.uuid1())
         self.Type = typ  # this is inherited from EnergyPlus and might not be useful
@@ -69,6 +81,11 @@ class WindowMaterial:
         self.FrameId = frame_id
         self.UValue = u_value
         self.gValue = g_value
+        # Life Cycle properties
+        self.TransportScenario = transport_scenario
+        self.DisposalScenario = disposal_scenario
+        self.CuttingWaste = cutting_waste
+        self.LifeTime = life_time
 
     def __str__(self):
         return self.Name + " (WindowMaterial)"
@@ -79,7 +96,8 @@ class WindowMaterial:
 
 class ShadingMaterial:
     def __init__(self, name: str, db_id: float, reflectance: float, transmittance: float, emissivity: float,
-                 thickness: float, conductivity: float, density: float):
+                 thickness: float, conductivity: float, density: float,
+                 transport_scenario: float, disposal_scenario: float, cutting_waste: float, life_time: int):
         self.Name = name
         self.DbId = db_id
         self.IuId = str(uuid.uuid1())
@@ -89,6 +107,11 @@ class ShadingMaterial:
         self.Thickness = thickness
         self.Conductivity = conductivity
         self.Density = density  # not in honeybee
+        # Life Cycle properties
+        self.TransportScenario = transport_scenario
+        self.DisposalScenario = disposal_scenario
+        self.CuttingWaste = cutting_waste
+        self.LifeTime = life_time
 
     def __str__(self):
         return self.Name + " (ShadingMaterial)"
