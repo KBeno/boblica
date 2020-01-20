@@ -1,4 +1,6 @@
 __pycache__/
 
-tools/
-calculation/
+firepy/tools/
+firepy/calculation/
+examples/
+firepy/app/
