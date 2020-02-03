@@ -1,6 +1,6 @@
 __pycache__/
 
-firepy/tools/
+firepy/tools/database.py
 examples/
 firepy/app/flaskapp.py
 firepy/app/flasksetup.py
