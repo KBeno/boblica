@@ -1,10 +1,13 @@
 from typing import Mapping, Union, MutableMapping, List
+from pathlib import Path
+import logging
+
 import pandas as pd
+
 import firepy.model.building
 import firepy.model.hvac
 from firepy.model.building import ObjectLibrary
 from firepy.tools.database import SqlDB  # ,OLCA
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -93,10 +96,12 @@ class CostCalculation:
         return self._life_cycle_data
 
     @life_cycle_data.setter
-    def life_cycle_data(self, source: Union[str, pd.DataFrame]):
+    def life_cycle_data(self, source: Union[str, Path, pd.DataFrame]):
         if isinstance(source, str):
             # Read from path
             self._life_cycle_data = pd.read_csv(source, index_col=self.match_col)
+        elif isinstance(source, Path):
+            self._life_cycle_data = pd.read_csv(str(source), index_col=self.match_col)
         elif isinstance(source, pd.DataFrame):
             source.set_index(self.match_col)
             self._life_cycle_data = source
@@ -114,10 +119,12 @@ class CostCalculation:
         return self._cost_data
 
     @cost_data.setter
-    def cost_data(self, source: Union[str, pd.DataFrame]):
+    def cost_data(self, source: Union[str, Path, pd.DataFrame]):
         if isinstance(source, str):
             # Read from path
             self._cost_data = pd.read_csv(source, index_col=0, header=[0, 1])
+        elif isinstance(source, Path):
+            self._cost_data = pd.read_csv(str(source), index_col=0, header=[0, 1])
         elif isinstance(source, pd.DataFrame):
             self._cost_data = source
 
@@ -134,7 +141,8 @@ class CostCalculation:
                                         firepy.model.building.FenestrationSurface,
                                         firepy.model.hvac.Heating,
                                         firepy.model.hvac.Cooling,
-                                        firepy.model.hvac.HVAC],
+                                        firepy.model.hvac.HVAC,
+                                        firepy.model.building.Building],
                        library: ObjectLibrary = None, **kwargs) -> CostResult:
         """
         Calculate the life cycle costs of Firepy objects

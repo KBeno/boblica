@@ -1,169 +1,179 @@
-import os.path
 import logging
 from pathlib import Path
+import configparser
+from typing import MutableMapping, Tuple, Union
 
 from flask import Flask, request, jsonify
 import redis
 import dill
 import pandas as pd
 import sqlalchemy
+from eppy.modeleditor import IDF
 
-from firepy.app.settings import CalculationSetup
-from firepy.tools.create import FenestrationCreator
+from firepy.app.settings import Parameter
+from firepy.tools.serializer import IdfSerializer
+from firepy.calculation.energy import RemoteConnection, EnergyPlusSimulation
+from firepy.model.building import Building
+from firepy.calculation.lca import ImpactResult, LCACalculation
+from firepy.calculation.cost import CostResult, CostCalculation
 
 app = Flask(__name__)
 
+# get configuration
+config = configparser.ConfigParser()
+config_path = Path('../setup/config.ini')
+config.read(str(config_path))
 
-# initiate redis client to store and get objects
-r = redis.Redis(host='127.0.0.1', port=6379)
-# use redis to share between workers in future
-CALCULATION_SETUP = None
+# initiate redis client from config to store and get objects
+redis_host = config['Redis'].get('host')
+redis_port = config['Redis'].getint('port')
+R = redis.Redis(host=redis_host, port=redis_port)
+# Redis keys: [
+#   calculation_name:epw, full epw string
+#   calculation_name:idf, full idf string
+#   calculation_name:model,
+#   calculation_name:parameters,
+#   calculation_name:lca_calculation,
+#   calculation_name:cost_calculation]
 
+# # use redis to share between workers in future
+# CALCULATION_SETUP = None
 
-# @app.before_first_request
-# def setup_logging():
-#     app.logger.addHandler(logging.StreamHandler())
-#     app.logger.setLevel(logging.DEBUG)
+# setup energy calculation server from config
+
+ep_host = config['Calculation.Energy'].get('host')
+ep_port = config['Calculation.Energy'].getint('port')
+server = RemoteConnection(host=ep_host, port=ep_port)
+ENERGY_CALCULATION = EnergyPlusSimulation(typ='remote', remote_server=server)
+
+# setup idf_serializer -> from config (no need for shared data)
+idd_path_string = config['Firepy'].get('idd_path')
+idd_path = Path(idd_path_string)
+IDF_PARSER = IdfSerializer(idd_path=idd_path)
+
+# Setup result database from config
+db_host = config['Database.Result'].get('host')
+db_port = config['Database.Result'].getint('port')
+db_user = config['Database.Result'].get('user')
+db_pw = config['Database.Result'].get('password')
+db_name = config['Database.Result'].get('database')
+connection_string = 'postgresql://{user}:{pw}@{host}:{port}'.format(
+    user=db_user,
+    pw=db_pw,
+    host=db_host,
+    port=db_port
+)
+RESULT_DB = sqlalchemy.create_engine(connection_string)
 
 
 @app.route("/setup", methods=["POST"])
 def setup():
 
-    # get CalculationSetup from request
-    setup_dump = request.get_data()  # CalculationSetup instance from pickle
-    calc_setup = dill.loads(setup_dump)
+    # get calculation name
+    setup_name = request.args.get('name')
 
-    app.logger.info('Setting up: {n}'.format(n=calc_setup.name))
-    # # make folder for the calculation
-    # setup_path = BASE_PATH / 'calculations' / calc_setup.name
-    # if not setup_path.exists():
-    #     setup_path.mkdir(parents=True)
-    #
-    # # serialize setup and save it to the file (in future to redis)
-    # pickle_path = setup_path / 'setup.pickle'
-    # app.logger.info('Saving setup file at: {p}'.format(p=pickle_path))
-    # with pickle_path.open('wb') as setup_pickle:
-    #     dill.dump(calc_setup, setup_pickle)
+    # get type of data
+    content_type = request.args.get('type')
 
-    # serialize setup and save it to redis
-    app.logger.info('Saving setup file to redis')
-    r.set(calc_setup.name, setup_dump)
+    # epw -> Redis
+    if content_type == 'epw':
+        app.logger.debug('Setting up epw for: {n}'.format(n=setup_name))
+        content = request.get_data(as_text=True)
+        R.set('{name}:epw'.format(name=setup_name), content)
+        app.logger.debug('Setting up epw on simulation server')
+        ENERGY_CALCULATION.setup_server(name=setup_name, epw=content)
 
-    # TODO log for each calculation separately
+    # idf -> Redis
+    if content_type == 'idf':
+        app.logger.debug('Setting up idf for: {n}'.format(n=setup_name))
+        content = request.get_data(as_text=True)
+        R.set('{name}:idf'.format(name=setup_name), content)
 
-    # # Initiate empty file
-    # result_csv_path = setup_path + '/results.csv'
-    # # make sure we do not overwrite existing files
-    # if os.path.isfile(result_csv_path):
-    #     i = 0
-    #     result_csv_name = result_csv_path.split('.csv')[0]
-    #     if '_' in result_csv_name[-3:]:
-    #         result_csv_name = result_csv_name.split('_')[0]
-    #     while os.path.isfile(result_csv_name + '_{i}.csv'.format(i=i)):
-    #         i += 1
-    #     result_csv_path = result_csv_name + '_{i}.csv'.format(i=i)
-    #
-    # app.logger.info('Initiating result file at: {p}'.format(p=result_csv_path))
-    # calc_setup.results.to_csv(result_csv_path)
+    # model -> Redis
+    if content_type == 'model':
+        app.logger.debug('Setting up model for: {n}'.format(n=setup_name))
+        content = request.get_data()  # serialized Building object
+        R.set('{name}:model'.format(name=setup_name), content)
 
-    # additional steps from setup() function of CalculationSetup
-    calc_setup.setup(logger=app.logger)
+    # parameters -> Redis
+    if content_type == 'parameters':
+        app.logger.debug('Setting up parameters for: {n}'.format(n=setup_name))
+        content = request.get_data()  # serialized MutableMapping[str, Parameter] object
+        R.set('{name}:parameters'.format(name=setup_name), content)
 
-    global CALCULATION_SETUP
-    CALCULATION_SETUP = calc_setup
+    # TODO unused, objectives are defined in the setup functions
+    # objectives -> Redis
+    # if content_type == 'objectives':
+    #     app.logger.debug('Setting up objectives')
+    #     content = request.get_data()  # serialized List[str] object
+    #     R.hset(setup_name, 'objectives', content)
 
-    return 'Setup for {n}: Done'.format(n=calc_setup.name)
+    # lca calculation -> Redis
+    if content_type == 'lca_calculation':
+        app.logger.debug('Setting up LCA Calculation for: {n}'.format(n=setup_name))
+        content = request.get_data()  # serialized LCACalculation object
+        R.set('{name}:lca_calculation'.format(name=setup_name), content)
+
+    # cost calculation -> Redis
+    if content_type == 'cost_calculation':
+        app.logger.debug('Setting up Cost Calculation for: {n}'.format(n=setup_name))
+        content = request.get_data()  # serialized CostCalculation object
+        R.set('{name}:cost_calculation'.format(name=setup_name), content)
+
+    # Check table in database
+    if content_type == 'database':
+        if RESULT_DB.has_table(setup_name):
+            app.logger.info('Result database has table named {n}, results will be overwritten'.format(n=setup_name))
+            query = 'DROP TABLE {n}'.format(n=setup_name)
+            RESULT_DB.execute(query)
+
+    return 'OK'
 
 
 @app.route("/calculate", methods=['GET'])
 def calculate():
+    """
+    Calculate the impact based on the parameters sent in the args of the request
+    Model is updated, calculations are made and results are written in the database
+    This is the entry point for external optimization algorithms
+    :return: json representation of the calculated objectives
+    """
 
     # get the name of the calculation setup
     name = request.args.get('name')
     if name is None:
         return "Please provide 'name' argument to specify which model to calculate"
 
-    global CALCULATION_SETUP
-    if CALCULATION_SETUP is None or CALCULATION_SETUP.name != name:
-        # # read setup from file (in future from redis)
-        # setup_path = BASE_PATH / 'calculations' / name
-        # if not setup_path.exists():
-        #     return "No setup found for name: {s}".format(s=name)
-        #
-        # pickle_path = setup_path / 'setup.pickle'
-        #
-        # # deserialize setup
-        # app.logger.info('Loading setup from file: {p}'.format(p=pickle_path))
-        # with pickle_path.open('rb') as setup_pickle:
-        #     CALCULATION_SETUP = dill.load(setup_pickle)
+    # ----------------------- MODEL UPDATE --------------------------------
+    parameters, msg = update_params(name=name)
+    if msg is not None:
+        return msg
 
-        # read setup from redis
-        setup_dump = r.get(name)
-        if setup_dump is None:
-            return "No setup found for name: {s}".format(s=name)
+    model, idf = update_model(name=name, parameters=parameters)
 
-        app.logger.info('Loading setup from {n} redis'.format(n=name))
-        calc_setup = dill.loads(setup_dump)
-        CALCULATION_SETUP = calc_setup
+    # ----------------------- CALCULATIONS --------------------------------
+    impact_result, cost_result, sim_id = run(name=name, model=model, idf=idf)
 
-    # update parameters in the setup
-    for name, param in CALCULATION_SETUP.parameters.items():
-        # get value from request argument
-        value = request.args.get(name)
-        if value is None:
-            return 'Missing value for parameter: {p}'.format(p=name)
+    # ----------------------- EVALUATION --------------------------------
+    from firepy.setup.functions import evaluate
 
-        # convert type of parameter
-        try:
-            if param.type == 'float':
-                value = float(value)
-            elif param.type == 'str':
-                value = str(value)
-            else:
-                return 'Parameter type of {p} needs to be one of ["str", "float"], not {pt}'.format(
-                    pt=param.type, p=param.name
-                )
-        except ValueError as e:
-            return 'Parameter conversion failed: {e}'.format(e=e)
+    result = evaluate(impacts=impact_result.impacts, costs=cost_result.costs)
 
-        if param.limits != (None, None):
-            minimum, maximum = param.limits
-            if not minimum < value < maximum:
-                return 'Parameter value {v} of {p} exceeds its limits: {lim}'.format(
-                    v=value, p=param.name, lim=param.limits
-                )
+    # -------------------- WRITE RESULTS TO DATABASE --------------------
+    app.logger.info('Saving results to database')
 
-        # update parameter value
-        param.value = value
+    # collect updated parameters
+    data = {p.name: p.value for p in parameters.values()}
 
-    # parameters = {
-    #     'fen_ratio_N': float(request.args.get('fen_rat_N')),
-    #     'fen_ratio_W': float(request.args.get('fen_rat_W')),
-    #     'fen_ratio_S': float(request.args.get('fen_rat_S')),
-    #     'fen_ratio_E': float(request.args.get('fen_rat_E')),
-    #     'glazing_type_N': request.args.get('glazing_N'),
-    #     'glazing_type_W': request.args.get('glazing_W'),
-    #     'glazing_type_S': request.args.get('glazing_S'),
-    #     'glazing_type_E': request.args.get('glazing_E'),
-    #     'frame_type': request.args.get('frame'),
-    #     'wall_ins_material': request.args.get('wall_ins_mat'),
-    #     'wall_ins_thickness': float(request.args.get('wall_ins_thick')),
-    #     'roof_ins_material': request.args.get('roof_ins_mat'),
-    #     'roof_ins_thickness': float(request.args.get('roof_ins_thick')),
-    #     'floor_ins_thickness': float(request.args.get('floor_ins_thick'))
-    # }
+    # Create pandas Series from parameters and results
+    result_series = pd.Series(data=data, name=sim_id)
+    result_series = result_series.append(result)
+    result_series['calculation_id'] = sim_id
+    result_frame = result_series.to_frame().transpose()
 
-    # now that the parameters are updated, we can update the model itself
-    CALCULATION_SETUP.update_model(logger=app.logger)
+    result_frame.to_sql(name=name, con=RESULT_DB, if_exists='append')
 
-    result = CALCULATION_SETUP.calculate(logger=app.logger)
-
-    # result_csv_path = setup_path + '/results.csv'
-    # app.logger.info('Updating results file at: {}'.format(result_csv_path))
-    # # TODO this was not okay if working parallel!
-    # setup.results.to_csv(result_csv_path)
-
-    return jsonify(result)
+    return jsonify(result.to_dict())
 
 
 @app.route("/status", methods=['GET'])
@@ -173,12 +183,9 @@ def status():
     :return: json
     """
 
-    # cal_path = BASE_PATH / 'calculations'
-    # if not cal_path.exists():
-    #     return 'No setup found'
-    # setups = [p.name for p in cal_path.iterdir() if p.is_dir()]
-
-    setups = [k.decode() for k in r.keys()]
+    setups = [k.decode() for k in R.keys()]
+    setups = [s.split(':')[0] for s in setups]
+    setups = list(set(setups))
     info = {
         'setups': setups
     }
@@ -194,140 +201,195 @@ def results():
     if name is None:
         return "Please provide 'name' argument to specify which results to return"
 
-    global CALCULATION_SETUP
-    if CALCULATION_SETUP is None or CALCULATION_SETUP.name != name:
-        # # read setup from file (in future from redis)
-        # setup_path = BASE_PATH / 'calculations' / name
-        # if not setup_path.exists():
-        #     return "No setup found for name: {s}".format(s=name)
-        #
-        # pickle_path = setup_path / 'setup.pickle'
-        #
-        # # deserialize setup
-        # app.logger.info('Loading setup from file: {p}'.format(p=pickle_path))
-        # with pickle_path.open('rb') as setup_pickle:
-        #     CALCULATION_SETUP = dill.load(setup_pickle)
-
-        # read setup from redis
-        setup_dump = r.get(name)
-        if setup_dump is None:
-            return "No setup found for name: {s}".format(s=name)
-
-        app.logger.info('Loading setup from {n} redis'.format(n=name))
-        calc_setup = dill.loads(setup_dump)
-        CALCULATION_SETUP = calc_setup
-
     query = 'SELECT * FROM {tbl}'.format(
         tbl=name,
     )
 
-    if CALCULATION_SETUP.result_db is None:
-        CALCULATION_SETUP.result_db = sqlalchemy.create_engine(CALCULATION_SETUP.result_db_url)
+    if not RESULT_DB.has_table(name):
+        return 'No result found for name: {n}'.format(n=name)
 
-    if not CALCULATION_SETUP.result_db.has_table(CALCULATION_SETUP.name):
-        return 'No result found for name: {n}'.format(n=CALCULATION_SETUP.name)
-
-    result = pd.read_sql_query(query, CALCULATION_SETUP.result_db)
+    result = pd.read_sql_query(query, RESULT_DB)
 
     return jsonify(result.to_json(orient='split'))
 
+
 @app.route("/instate", methods=['GET'])
 def instate():
+    """
+    Same as calculate() but the results are not saved to the database
+    Use this to update the state of the server to further analyse the model
+    :return: id of the simulation and result of the calculation
+    """
 
     # get the name of the calculation setup
     name = request.args.get('name')
     if name is None:
-        return "Please provide 'name' argument to specify which model to calculate"
+        return "Please provide 'name' argument to specify which model to instate"
 
-    global CALCULATION_SETUP
-    if CALCULATION_SETUP is None or CALCULATION_SETUP.name != name:
+    # ----------------------- MODEL UPDATE --------------------------------
+    parameters, msg = update_params(name=name)
+    if msg is not None:
+        return msg
 
-        # read setup from redis
-        setup_dump = r.get(name)
-        if setup_dump is None:
-            return "No setup found for name: {s}".format(s=name)
+    model, idf = update_model(name=name, parameters=parameters)
 
-        app.logger.info('Loading setup from {n} redis'.format(n=name))
-        calc_setup = dill.loads(setup_dump)
-        CALCULATION_SETUP = calc_setup
+    # ----------------------- CALCULATIONS --------------------------------
+    impact_result, cost_result, sim_id = run(name=name, model=model, idf=idf)
 
-    # update parameters in the setup
-    for name, param in CALCULATION_SETUP.parameters.items():
-        # get value from request argument
-        value = request.args.get(name)
-        if value is None:
-            return 'Missing value for parameter: {p}'.format(p=name)
+    # ----------------------- EVALUATION --------------------------------
+    from firepy.setup.functions import evaluate
 
-        # convert type of parameter
-        try:
-            if param.type == 'float':
-                value = float(value)
-            elif param.type == 'str':
-                value = str(value)
-            else:
-                return 'Parameter type of {p} needs to be one of ["str", "float"], not {pt}'.format(
-                    pt=param.type, p=param.name
-                )
-        except ValueError as e:
-            return 'Parameter conversion failed: {e}'.format(e=e)
+    result = evaluate(impacts=impact_result.impacts, costs=cost_result.costs)
 
-        if param.limits != (None, None):
-            minimum, maximum = param.limits
-            if not minimum < value < maximum:
-                return 'Parameter value {v} of {p} exceeds its limits: {lim}'.format(
-                    v=value, p=param.name, lim=param.limits
-                )
+    data = {
+        'result': result.to_dict(),
+        'simulation_id': sim_id
+    }
+    return jsonify(data)
 
-        # update parameter value
-        param.value = value
-
-    # now that the parameters are updated, we can update the model itself
-    CALCULATION_SETUP.update_model(logger=app.logger)
-
-    CALCULATION_SETUP.calculate(logger=app.logger, save=False)
-
-    setup_dump = dill.dumps(CALCULATION_SETUP)
-
-    return setup_dump
 
 @app.route("/reinstate", methods=['GET'])
 def reinstate():
+    """
+    Same as calculate() but the results are not saved to the database and the parameters are
+    retrieved from the result database based on the calculation id
+    Use this to update the state of the server to further analyse the model
+    :return: result of the calculation
+    """
 
     # get the name of the calculation setup
     name = request.args.get('name')
     if name is None:
-        return "Please provide 'name' argument to specify which model to calculate"
+        return "Please provide 'name' argument to specify which model to reinstate"
 
-    global CALCULATION_SETUP
-    if CALCULATION_SETUP is None or CALCULATION_SETUP.name != name:
-
-        # read setup from redis
-        setup_dump = r.get(name)
-        if setup_dump is None:
-            return "No setup found for name: {s}".format(s=name)
-
-        app.logger.info('Loading setup from {n} redis'.format(n=name))
-        calc_setup = dill.loads(setup_dump)
-        CALCULATION_SETUP = calc_setup
-
+    # ----------------------- MODEL UPDATE --------------------------------
     calc_id = request.args.get('id')
-    # update parameters in the setup based on results db
-    query = 'SELECT * FROM {tbl}'.format(
-        tbl=name
-    )
+    # update parameters in the server based on results db
 
-    if CALCULATION_SETUP.result_db is None:
-        CALCULATION_SETUP.result_db = sqlalchemy.create_engine(CALCULATION_SETUP.result_db_url)
+    parameters, msg = update_params(name=name, calculation_id=calc_id)
 
-    if not CALCULATION_SETUP.result_db.has_table(CALCULATION_SETUP.name):
-        return 'No result found for name: {n}'.format(n=CALCULATION_SETUP.name)
+    if msg is not None:
+        return msg
 
-    result = pd.read_sql_query(query, CALCULATION_SETUP.result_db, index_col='index')
-    for name, param in CALCULATION_SETUP.parameters.items():
-        # get value from result db
-        value = result.loc[calc_id, name]
+    model, idf = update_model(name=name, parameters=parameters)
+
+    # ----------------------- CALCULATIONS --------------------------------
+    impact_result, cost_result, sim_id = run(name=name, model=model, simulation_id=calc_id)
+
+    # ----------------------- EVALUATION --------------------------------
+    from firepy.setup.functions import evaluate
+
+    result = evaluate(impacts=impact_result.impacts, costs=cost_result.costs)
+
+    return jsonify(result.to_dict())
+
+
+@app.route("/model", methods=['GET'])
+def get_model():
+    """
+    Return the actual model from the server
+    :return: Serialized model
+    """
+    # get the name of the calculation setup
+    name = request.args.get('name')
+    if name is None:
+        return "Please provide 'name' argument to specify which model to return"
+
+    if not R.exists('{name}:model'.format(name=name)):
+        return "No model found for name: {s}".format(s=name)
+
+    model_dump = R.get('{name}:model'.format(name=name))
+    return model_dump
+
+
+@app.route("/parameters", methods=['GET'])
+def get_parameters():
+    """
+    Return the actual parameters from the server
+    :return: json
+    """
+    # get the name of the calculation setup
+    name = request.args.get('name')
+    if name is None:
+        return "Please provide 'name' argument to specify which model to return the parameters of"
+
+    if not R.exists('{name}:parameters'.format(name=name)):
+        return "No parameters found for name: {s}".format(s=name)
+
+    params: MutableMapping[str, Parameter] = dill.loads(R.get('{name}:parameters'.format(name=name)))
+    param_dict = {name: par.value for name, par in params.items()}
+    return jsonify(param_dict)
+
+
+@app.route("/lca", methods=['GET'])
+def get_lca_calculation():
+    """
+    Return the last lca_calculation from the server
+    :return: Serialized LCACalculation
+    """
+    # get the name of the calculation setup
+    name = request.args.get('name')
+    if name is None:
+        return "Please provide 'name' argument to specify which model to return the calculation of"
+
+    if not R.exists('{name}:lca_calculation'.format(name=name)):
+        return "No LCA calculation found for name: {s}".format(s=name)
+
+    calc_dump = R.get('{name}:lca_calculation'.format(name=name))
+    return calc_dump
+
+
+@app.route("/cost", methods=['GET'])
+def get_cost_calculation():
+    """
+    Return the actual model from the server
+    :return: Serialized CostCalculation
+    """
+    # get the name of the calculation setup
+    name = request.args.get('name')
+    if name is None:
+        return "Please provide 'name' argument to specify which model to return the calculation of"
+
+    if not R.exists('{name}:cost_calculation'.format(name=name)):
+        return "No Cost calculation found for name: {s}".format(s=name)
+
+    calc_dump = R.get('{name}:cost_calculation'.format(name=name))
+    return calc_dump
+
+
+def update_params(name: str,
+                  calculation_id: str = None) -> Tuple[MutableMapping[str, Parameter], Union[str, None]]:
+    # update parameters in the setup
+    app.logger.info('Loading parameters for {n} from redis'.format(n=name))
+
+    param_dump = R.get('{name}:parameters'.format(name=name))
+    parameters: MutableMapping[str, Parameter] = dill.loads(param_dump)
+    msg = None
+
+    if calculation_id is not None:
+        query = 'SELECT * FROM {tbl}'.format(
+            tbl=name
+        )
+        result = pd.read_sql_query(query, RESULT_DB, index_col='calculation_id')
+        try:
+            db_values = result.loc[calculation_id, :]
+        except KeyError:
+            msg = 'No previous calculation found for id: {id}'.format(id=calculation_id)
+            return parameters, msg
+    else:
+        db_values = {n: None for n in parameters.keys()}
+
+    for name, param in parameters.items():
+        if calculation_id is not None:
+            # get value from previous calculations
+            value = db_values[name]
+        else:
+            # get value from request argument
+            value = request.args.get(name)
+
         if value is None:
-            return 'Missing value for parameter: {p}'.format(p=name)
+            msg = 'Missing value for parameter: {p}'.format(p=name)
+            return parameters, msg
 
         # convert type of parameter
         try:
@@ -336,30 +398,104 @@ def reinstate():
             elif param.type == 'str':
                 value = str(value)
             else:
-                return 'Parameter type of {p} needs to be one of ["str", "float"], not {pt}'.format(
+                msg = 'Parameter type of {p} needs to be one of ["str", "float"], not {pt}'.format(
                     pt=param.type, p=param.name
                 )
+                return parameters, msg
         except ValueError as e:
-            return 'Parameter conversion failed: {e}'.format(e=e)
+            msg = 'Parameter conversion failed: {e}'.format(e=e)
+            return parameters, msg
 
         if param.limits != (None, None):
             minimum, maximum = param.limits
             if not minimum < value < maximum:
-                return 'Parameter value {v} of {p} exceeds its limits: {lim}'.format(
+                msg = 'Parameter value {v} of {p} exceeds its limits: {lim}'.format(
                     v=value, p=param.name, lim=param.limits
                 )
+                return parameters, msg
 
         # update parameter value
         param.value = value
 
-    # now that the parameters are updated, we can update the model itself
-    CALCULATION_SETUP.update_model(logger=app.logger)
+    R.set('{name}:parameters'.format(name=name), dill.dumps(parameters))
+    return parameters, msg
 
-    CALCULATION_SETUP.calculate(logger=app.logger, save=False, sim_id=calc_id)
 
-    setup_dump = dill.dumps(CALCULATION_SETUP)
+def update_model(name: str, parameters: MutableMapping[str, Parameter]) -> Tuple[Building, IDF]:
 
-    return setup_dump
+    app.logger.info('Updating model: {n}'.format(n=name))
+
+    # update the model
+    model: Building = dill.loads(R.get('{name}:model'.format(name=name)))
+
+    from firepy.setup.functions import update_model, idf_update_options
+
+    model = update_model(parameters=parameters, model=model)
+
+    R.set('{name}:model'.format(name=name), dill.dumps(model))
+
+    # update idf too along with the model
+    app.logger.info('Updating idf based on model: {n}'.format(n=name))
+
+    idf_string = R.get('{name}:idf'.format(name=name))
+    IDF_PARSER.idf = idf_string.decode()
+    IDF_PARSER.update_idf(model=model, **idf_update_options)
+    R.set('{name}:idf'.format(name=name), IDF_PARSER.idf.idfstr())
+
+    return model, IDF_PARSER.idf
+
+
+def run(name: str,
+        model: Building,
+        idf: IDF = None,
+        simulation_id: str = None) -> Tuple[ImpactResult, CostResult, str]:
+    """
+    Run calculations with the model. Either idf or simulation_id is needed. If simulation_id is given, no
+    simulation will run, existing results will be read
+    :param name: name of the calculation setup
+    :param model: Building model tu run calculation on
+    :param idf: IDF representing the same model to use in simulation
+    :param simulation_id: if simulation has been made before, the id of the simulation
+    :return: impact result and cost result
+    """
+
+    # energy calculation
+    if simulation_id is None:
+        app.logger.info('Running simulation')
+
+        ENERGY_CALCULATION.idf = idf
+        ENERGY_CALCULATION.set_outputs('heating', 'cooling', typ='zone')
+
+        simulation_id = ENERGY_CALCULATION.run(name=name)
+
+        app.logger.info('Simulation ready, id: {sid}'.format(sid=simulation_id))
+
+    app.logger.info('Getting results for simulation with id: {sid}'.format(sid=simulation_id))
+
+    energy_calc_results = ENERGY_CALCULATION.results(variables=['heating', 'cooling'],
+                                                     name=name,
+                                                     sim_id=simulation_id,
+                                                     typ='zone', period='runperiod')
+
+    # impact calculation
+    app.logger.info('Calculating life cycle impact')
+
+    lca_calculation: LCACalculation = dill.loads(R.get('{name}:lca_calculation'.format(name=name)))
+    lca_calculation.clear_cache()
+
+    lca_result = lca_calculation.calculate_impact(model, demands=energy_calc_results)
+    R.set('{name}:lca_calculation'.format(name=name), dill.dumps(lca_calculation))
+
+    # cost calculation
+    app.logger.info('Calculating life cycle costs')
+
+    cost_calculation: CostCalculation = dill.loads(R.get('{name}:cost_calculation'.format(name=name)))
+    cost_calculation.clear_cache()
+
+    cost_result = cost_calculation.calculate_cost(model, demands=energy_calc_results)
+    R.set('{name}:cost_calculation'.format(name=name), dill.dumps(cost_calculation))
+
+    return lca_result, cost_result, simulation_id
 
 
 # use only for development:

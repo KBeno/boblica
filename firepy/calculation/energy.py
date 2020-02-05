@@ -14,6 +14,8 @@ class RemoteConnection:
     def __init__(self, host: str, port: int):
         self.host = host
         self.port = port
+        if not host.startswith('http'):
+            self.host = 'http://' + self.host
         self.url = '{host}:{port}'.format(host=self.host, port=self.port)
 
     def setup(self, name: str = None, epw: str = None, idd: str = None, variables: dict = None):
@@ -86,6 +88,8 @@ class RemoteConnection:
 
 class EnergyPlusSimulation:
 
+    # TODO separate remote and local class
+
     var_dict = {
         'zone': {
             'heating': 'Zone Ideal Loads Supply Air Total Heating Energy',
@@ -142,8 +146,11 @@ class EnergyPlusSimulation:
 
         self.typ = typ
         if epw is None:
-            with open(epw_path, 'r') as epw_file:  # 'rb' for binary open?
-                self.epw = epw_file.read()
+            if epw_path is not None:
+                with open(epw_path, 'r') as epw_file:  # 'rb' for binary open?
+                    self.epw = epw_file.read()
+            else:
+                self.epw = None
         else:
             self.epw = epw
 
@@ -180,8 +187,12 @@ class EnergyPlusSimulation:
         server_response = self.server.run(name=name, idf=self.idf)
         return server_response
 
-    def setup_server(self, name: str):
+    def setup_server(self, name: str, epw: str = None):
         variables = {'var_dict': EnergyPlusSimulation.var_dict, 'units': EnergyPlusSimulation.units}
+        if self.epw is None and epw is None:
+            raise Exception('No epw is set, please provide epw before setting up the server')
+        if epw is not None:
+            self.epw = epw
         self.server.setup(name=name, epw=self.epw, variables=variables)
         # optionally we could set the idd
 

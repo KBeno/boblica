@@ -1,10 +1,13 @@
 from typing import Mapping, Union, MutableMapping, List
+from pathlib import Path
+import logging
+
 import pandas as pd
+
 import firepy.model.building
 import firepy.model.hvac
 from firepy.model.building import ObjectLibrary
 from firepy.tools.database import SqlDB, OLCA
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -259,10 +262,12 @@ class LCACalculation:
         return self._life_cycle_data
 
     @LifeCycleData.setter
-    def LifeCycleData(self, source: Union[str, pd.DataFrame]):
+    def LifeCycleData(self, source: Union[str, Path, pd.DataFrame]):
         if isinstance(source, str):
             # Read from path
             self._life_cycle_data = pd.read_csv(source, index_col=self.match_col)
+        elif isinstance(source, Path):
+            self._life_cycle_data = pd.read_csv(str(source), index_col=self.match_col)
         elif isinstance(source, pd.DataFrame):
             source.set_index(self.match_col)
             self._life_cycle_data = source
@@ -280,10 +285,12 @@ class LCACalculation:
         return self._impact_data
 
     @ImpactData.setter
-    def ImpactData(self, source: Union[str, pd.DataFrame]):
+    def ImpactData(self, source: Union[str, Path, pd.DataFrame]):
         if isinstance(source, str):
             # Read from path
             self._impact_data = pd.read_csv(source, index_col=0, header=[0, 1])
+        elif isinstance(source, Path):
+            self._impact_data = pd.read_csv(str(source), index_col=0, header=[0, 1])
         elif isinstance(source, pd.DataFrame):
             # TODO sql db will need to serve the same methods as used for a DataFrame
             self._impact_data = source
@@ -304,7 +311,8 @@ class LCACalculation:
                                           firepy.model.building.FenestrationSurface,
                                           firepy.model.hvac.Heating,
                                           firepy.model.hvac.Cooling,
-                                          firepy.model.hvac.HVAC],
+                                          firepy.model.hvac.HVAC,
+                                          firepy.model.building.Building],
                          library: ObjectLibrary = None, **kwargs) -> ImpactResult:
         """
         Calculate the environmental impact of Firepy objects

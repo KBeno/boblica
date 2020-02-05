@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from firepy.model.building import *
 # from firepy.tools.database import SqlDB
 import pandas as pd
@@ -82,11 +84,11 @@ class JsonSerializer:
 
 class IdfSerializer:
 
-    def __init__(self, idd_path: str, idf: Union[IDF, str] = None,
+    def __init__(self, idd_path: Union[str, Path], idf: Union[IDF, Path, str] = None,
                  parse_lca_data: bool = False, life_cycle_data: Union[str, pd.DataFrame] = None,
                  db = None, matching_col: str = 'DbId', matching_property: str = 'DbId'):
         # set path to EnergyPlus idd file
-        self.idd_path = idd_path
+        self.idd_path = str(idd_path)
 
         # parse the idf using eppy
         self.idf = idf
@@ -125,25 +127,27 @@ class IdfSerializer:
         }
 
     @property
-    def idf(self):
+    def idf(self) -> IDF:
         return self._idf
 
     @idf.setter
-    def idf(self, idf_source: Union[IDF, str, None]):
+    def idf(self, idf_source: Union[IDF, Path, str, None]):
         """
         Set original idf model
-        :param idf_source: either eppy IDF instance or file path to the idf
+        :param idf_source: either eppy IDF instance or file path to the idf or idf string
         :return:
         """
         if idf_source is not None:
             if isinstance(idf_source, IDF):
                 self._idf = idf_source
-                self.idf_idd_info = self._idf.__class__.idd_info
-                self.idf_block = self._idf.__class__.block
+                # self.idf_idd_info = self._idf.__class__.idd_info
+                # self.idf_block = self._idf.__class__.block
+            elif isinstance(idf_source, Path):
+                self._idf = self.from_file(path=str(idf_source), idd_path=self.idd_path)
+                # self.idf_idd_info = self._idf.__class__.idd_info
+                # self.idf_block = self._idf.__class__.block
             elif isinstance(idf_source, str):
-                self._idf = self.from_file(path=idf_source, idd_path=self.idd_path)
-                self.idf_idd_info = self._idf.__class__.idd_info
-                self.idf_block = self._idf.__class__.block
+                self._idf = self.from_text(idf_string=idf_source, idd_path=self.idd_path)
 
     @property
     def LifeCycleData(self) -> pd.DataFrame:
@@ -199,11 +203,18 @@ class IdfSerializer:
         simulation_control.Run_Simulation_for_Sizing_Periods = 'No'
         # simulation_control.Run_Simulation_for_Weather_File_Run_Periods = 'Yes'
 
-    def from_file(self, path: str, idd_path: str):
+    def from_file(self, path: str, idd_path: str) -> IDF:
         from eppy.modeleditor import IDF
         IDF.setiddname(idd_path)
         with open(path, 'r') as idf_file:
             idf = IDF(idf_file)
+        return idf
+
+    def from_text(self, idf_string: str, idd_path: str) -> IDF:
+        from eppy.modeleditor import IDF
+        IDF.setiddname(idd_path)
+        idf = IDF()
+        idf.initreadtxt(idf_string)
         return idf
 
     def idf_opaque_material(self, material: OpaqueMaterial):
