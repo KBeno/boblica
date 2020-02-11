@@ -1,15 +1,19 @@
 import logging
-from pathlib import Path
+import os
 import configparser
-from typing import MutableMapping, Tuple, Union
+import json
+from importlib import reload
+from pathlib import Path
+from typing import MutableMapping, Tuple, Union, List, Mapping
 
-from flask import Flask, request, jsonify
 import redis
 import dill
 import pandas as pd
 import sqlalchemy
+from flask import Flask, request, jsonify
 from eppy.modeleditor import IDF
 
+import firepy.setup.functions
 from firepy.app.settings import Parameter
 from firepy.tools.serializer import IdfSerializer
 from firepy.calculation.energy import RemoteConnection, EnergyPlusSimulation
@@ -19,9 +23,19 @@ from firepy.calculation.cost import CostResult, CostCalculation
 
 app = Flask(__name__)
 
+if __name__ != '__main__':
+    gunicorn_logger = logging.getLogger('gunicorn.error')
+    app.logger.handlers = gunicorn_logger.handlers
+    app.logger.setLevel(gunicorn_logger.level)
+
 # get configuration
 config = configparser.ConfigParser()
-config_path = Path('../setup/config.ini')
+try:
+    config_path = Path(os.environ['FIREPY_CONFIG'])
+except KeyError:
+    config_path = Path('../setup/config.ini')
+
+app.logger.debug('Reading configuration from: {fp}'.format(fp=config_path))
 config.read(str(config_path))
 
 # initiate redis client from config to store and get objects
@@ -35,9 +49,6 @@ R = redis.Redis(host=redis_host, port=redis_port)
 #   calculation_name:parameters,
 #   calculation_name:lca_calculation,
 #   calculation_name:cost_calculation]
-
-# # use redis to share between workers in future
-# CALCULATION_SETUP = None
 
 # setup energy calculation server from config
 
@@ -101,13 +112,6 @@ def setup():
         content = request.get_data()  # serialized MutableMapping[str, Parameter] object
         R.set('{name}:parameters'.format(name=setup_name), content)
 
-    # TODO unused, objectives are defined in the setup functions
-    # objectives -> Redis
-    # if content_type == 'objectives':
-    #     app.logger.debug('Setting up objectives')
-    #     content = request.get_data()  # serialized List[str] object
-    #     R.hset(setup_name, 'objectives', content)
-
     # lca calculation -> Redis
     if content_type == 'lca_calculation':
         app.logger.debug('Setting up LCA Calculation for: {n}'.format(n=setup_name))
@@ -144,23 +148,31 @@ def calculate():
     if name is None:
         return "Please provide 'name' argument to specify which model to calculate"
 
-    # ----------------------- MODEL UPDATE --------------------------------
     parameters, msg = update_params(name=name)
     if msg is not None:
         return msg
 
-    model, idf = update_model(name=name, parameters=parameters)
-
-    # ----------------------- CALCULATIONS --------------------------------
-    impact_result, cost_result, sim_id = run(name=name, model=model, idf=idf)
-
-    # ----------------------- EVALUATION --------------------------------
+    reload(firepy.setup.functions)
     from firepy.setup.functions import evaluate
 
-    result = evaluate(impacts=impact_result.impacts, costs=cost_result.costs)
+    try:
+        # ----------------------- MODEL UPDATE --------------------------------
+        model, idf = update_model(name=name, parameters=parameters)
+
+        # ----------------------- CALCULATIONS --------------------------------
+        impact_result, cost_result, sim_id = run(name=name, model=model, idf=idf)
+
+        # ----------------------- EVALUATION --------------------------------
+        result = evaluate(impacts=impact_result.impacts, costs=cost_result.costs)
+
+    except Exception as e:
+        # if anything goes wrong return an invalid result value (e.g. infinity)
+        app.logger.info('Calculation failed with error: {e}'.format(e=e))
+        result = evaluate()
+        sim_id = 'failed'
 
     # -------------------- WRITE RESULTS TO DATABASE --------------------
-    app.logger.info('Saving results to database')
+    app.logger.info('Saving results to database for: {id}'.format(id=sim_id))
 
     # collect updated parameters
     data = {p.name: p.value for p in parameters.values()}
@@ -213,7 +225,7 @@ def results():
     return jsonify(result.to_json(orient='split'))
 
 
-@app.route("/instate", methods=['GET'])
+@app.route("/instate", methods=['GET', 'POST'])
 def instate():
     """
     Same as calculate() but the results are not saved to the database
@@ -226,6 +238,12 @@ def instate():
     if name is None:
         return "Please provide 'name' argument to specify which model to instate"
 
+    if request.method == 'POST':
+        options = request.get_data(as_text=True)
+        options = json.loads(options)
+    else:
+        options = None
+
     # ----------------------- MODEL UPDATE --------------------------------
     parameters, msg = update_params(name=name)
     if msg is not None:
@@ -234,9 +252,10 @@ def instate():
     model, idf = update_model(name=name, parameters=parameters)
 
     # ----------------------- CALCULATIONS --------------------------------
-    impact_result, cost_result, sim_id = run(name=name, model=model, idf=idf)
+    impact_result, cost_result, sim_id = run(name=name, model=model, idf=idf, simulation_options=options)
 
     # ----------------------- EVALUATION --------------------------------
+    reload(firepy.setup.functions)
     from firepy.setup.functions import evaluate
 
     result = evaluate(impacts=impact_result.impacts, costs=cost_result.costs)
@@ -277,6 +296,7 @@ def reinstate():
     impact_result, cost_result, sim_id = run(name=name, model=model, simulation_id=calc_id)
 
     # ----------------------- EVALUATION --------------------------------
+    reload(firepy.setup.functions)
     from firepy.setup.functions import evaluate
 
     result = evaluate(impacts=impact_result.impacts, costs=cost_result.costs)
@@ -357,6 +377,64 @@ def get_cost_calculation():
     return calc_dump
 
 
+@app.route("/energy", methods=['GET'])
+def get_energy_results():
+    """
+    Return the energy calculation results for a given simulation id
+    :return:
+    """
+    # get the name of the calculation setup
+    name = request.args.get('name')
+    if name is None:
+        return "Please provide 'name' argument to specify which model to return the calculation of"
+
+    simulation_id = request.args.get('id')
+    if simulation_id is None:
+        return "Please provide 'id' argument to specify which model to return the energy results of"
+
+    variables = request.args.getlist('variables')
+    typ = request.args.get('type')
+    period = request.args.get('period')
+
+    app.logger.info('Getting results for simulation with id: {sid}'.format(sid=simulation_id))
+
+    energy_calc_results = ENERGY_CALCULATION.results(variables=variables,
+                                                     name=name,
+                                                     sim_id=simulation_id,
+                                                     typ=typ, period=period)
+
+    return jsonify(energy_calc_results.to_json(orient='split'))
+
+
+@app.route("/energy/detailed", methods=['GET'])
+def get_energy_results_detailed():
+    """
+    Return the energy calculation results for a given simulation id
+    :return:
+    """
+    # get the name of the calculation setup
+    name = request.args.get('name')
+    if name is None:
+        return "Please provide 'name' argument to specify which model to return the calculation of"
+
+    simulation_id = request.args.get('id')
+    if simulation_id is None:
+        return "Please provide 'id' argument to specify which model to return the energy results of"
+
+    variable = request.args.get('variable')
+    typ = request.args.get('type')
+    period = request.args.get('period')
+
+    app.logger.info('Getting detailed results for simulation with id: {sid}'.format(sid=simulation_id))
+
+    energy_calc_results = ENERGY_CALCULATION.results_detailed(variable=variable,
+                                                              name=name,
+                                                              sim_id=simulation_id,
+                                                              typ=typ, period=period)
+
+    return jsonify(energy_calc_results.to_json(orient='split'))
+
+
 def update_params(name: str,
                   calculation_id: str = None) -> Tuple[MutableMapping[str, Parameter], Union[str, None]]:
     # update parameters in the setup
@@ -428,7 +506,8 @@ def update_model(name: str, parameters: MutableMapping[str, Parameter]) -> Tuple
     # update the model
     model: Building = dill.loads(R.get('{name}:model'.format(name=name)))
 
-    from firepy.setup.functions import update_model, idf_update_options
+    reload(firepy.setup.functions)
+    from firepy.setup.functions import update_model, update_model
 
     model = update_model(parameters=parameters, model=model)
 
@@ -448,7 +527,8 @@ def update_model(name: str, parameters: MutableMapping[str, Parameter]) -> Tuple
 def run(name: str,
         model: Building,
         idf: IDF = None,
-        simulation_id: str = None) -> Tuple[ImpactResult, CostResult, str]:
+        simulation_id: str = None,
+        simulation_options: Mapping = None) -> Tuple[ImpactResult, CostResult, str]:
     """
     Run calculations with the model. Either idf or simulation_id is needed. If simulation_id is given, no
     simulation will run, existing results will be read
@@ -460,11 +540,30 @@ def run(name: str,
     """
 
     # energy calculation
+    if simulation_options is None:
+        reload(firepy.setup.functions)
+        from firepy.setup.functions import energy_calculation_options
+    else:
+        energy_calculation_options = simulation_options
+
     if simulation_id is None:
         app.logger.info('Running simulation')
 
+        frequency = energy_calculation_options['output_resolution']
+        if frequency is not None:
+            ENERGY_CALCULATION.output_frequency = frequency
+
         ENERGY_CALCULATION.idf = idf
-        ENERGY_CALCULATION.set_outputs('heating', 'cooling', typ='zone')
+
+        zone_outputs: List = energy_calculation_options['outputs']['zone']
+        if zone_outputs:  # not an empty list
+            ENERGY_CALCULATION.set_outputs(*zone_outputs, typ='zone')
+        else:
+            ENERGY_CALCULATION.set_outputs('heating', 'cooling', typ='zone')
+
+        surface_outputs: List = energy_calculation_options['outputs']['surface']
+        if surface_outputs:  # not an empty list
+            ENERGY_CALCULATION.set_outputs(*surface_outputs, typ='surface')
 
         simulation_id = ENERGY_CALCULATION.run(name=name)
 
@@ -478,7 +577,7 @@ def run(name: str,
                                                      typ='zone', period='runperiod')
 
     # impact calculation
-    app.logger.info('Calculating life cycle impact')
+    app.logger.info('Calculating life cycle impact for: {id}'.format(id=simulation_id))
 
     lca_calculation: LCACalculation = dill.loads(R.get('{name}:lca_calculation'.format(name=name)))
     lca_calculation.clear_cache()
@@ -487,7 +586,7 @@ def run(name: str,
     R.set('{name}:lca_calculation'.format(name=name), dill.dumps(lca_calculation))
 
     # cost calculation
-    app.logger.info('Calculating life cycle costs')
+    app.logger.info('Calculating life cycle costs for: {id}'.format(id=simulation_id))
 
     cost_calculation: CostCalculation = dill.loads(R.get('{name}:cost_calculation'.format(name=name)))
     cost_calculation.clear_cache()
@@ -500,13 +599,4 @@ def run(name: str,
 
 # use only for development:
 if __name__ == '__main__':
-
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    console = logging.StreamHandler()
-    console.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s %(name)-25s: %(levelname)-8s %(message)s', "%Y-%m-%d %H:%M:%S")
-    console.setFormatter(formatter)
-    logger.addHandler(console)
-
     app.run(debug=True, port=9091, host='0.0.0.0')

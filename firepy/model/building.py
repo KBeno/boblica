@@ -436,11 +436,13 @@ class Zone:
         return str(self.Name) if self.Name is not None else "NoName" + " (Zone)"
 
     def volume(self):
-
+        # Sum of signed volume of each pyramid formed by the sides with a common
+        # external point (in this case the origin)
         volume = 0
         for surface in self.BuildingSurfaces:
-            area = surface.area(True)
-            height = surface.vertices[0] * surface.normal()
+            area = surface.area(signed=True)
+            x, y, z = surface.vertices[0].coordinates()
+            height = Vector(x, y, z) * surface.normal()
             volume += area * height / 3
         return volume
 

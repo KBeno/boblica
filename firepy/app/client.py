@@ -1,6 +1,7 @@
 import requests
 import logging
-from typing import Mapping, Union, MutableMapping
+import json
+from typing import Mapping, Union, MutableMapping, List
 from json import JSONDecodeError
 from pathlib import Path
 from pprint import pformat
@@ -145,11 +146,15 @@ class RemoteClient:
         except JSONDecodeError:
             return response.text
 
-    def instate(self, name: str, parameters: Mapping[str, Union[float, int, str]]) -> Mapping:
+    def instate(self, name: str, parameters: Mapping[str, Union[float, int, str]],
+                options: Mapping = None) -> Mapping:
         url = self.url + '/instate'
         payload = {'name': name}
         payload.update(parameters)
-        response = requests.get(url=url, params=payload)
+        if options is not None:
+            response = requests.post(url=url, params=payload, data=json.dumps(options))
+        else:
+            response = requests.get(url=url, params=payload)
         try:
             return response.json()
         except JSONDecodeError:
@@ -188,4 +193,39 @@ class RemoteClient:
             calc: CostCalculation = dill.loads(response.content)
             return calc
         except dill.UnpicklingError:
+            return response.text
+
+    def get_energy(self, name: str, calc_id: str,
+                   variables: List[str] = None,
+                   typ: str = 'zone',
+                   period: str = 'runperiod') -> pd.DataFrame:
+        url = self.url + '/energy'
+        if variables is None:
+            variables = ['heating', 'cooling']
+        response = requests.get(url=url, params={'name': name,
+                                                 'id': calc_id,
+                                                 'variables': variables,
+                                                 'type': typ,
+                                                 'period': period})
+        try:
+            df = pd.read_json(response.json(), orient='split')
+            return df
+        except JSONDecodeError:
+            return response.text
+
+    def get_energy_detailed(self, name: str, calc_id: str,
+                            variable: str,
+                            typ: str,
+                            period: str) -> pd.DataFrame:
+        url = self.url + '/energy/detailed'
+
+        response = requests.get(url=url, params={'name': name,
+                                                 'id': calc_id,
+                                                 'variable': variable,
+                                                 'type': typ,
+                                                 'period': period})
+        try:
+            df = pd.read_json(response.json(), orient='split')
+            return df
+        except JSONDecodeError:
             return response.text

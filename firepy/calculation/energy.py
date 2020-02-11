@@ -71,11 +71,10 @@ class RemoteConnection:
         logger.debug('Response from server: {}'.format(response.text))
         return response.json()
 
-    def results_detailed(self, variable: str, typ: str, period: str):
-        # TODO not implemented on server side
+    def results_detailed(self, variable: str, name: str, sim_id: str, typ: str, period: str):
         url = self.url + '/results/detailed'
         logger.debug('Requesting detailed results from: {}'.format(url))
-        payload = {'variables': variable, 'type': typ, 'period': period}
+        payload = {'variable': variable, 'name': name, 'id': sim_id, 'type': typ, 'period': period}
         response = requests.get(url=url, params=payload)
         return response.json()
 
@@ -159,12 +158,20 @@ class EnergyPlusSimulation:
         if typ == 'remote':
             self.server = remote_server
 
-        self.output_frequency = []
+        self.output_frequency = output_freq
+
+    @property
+    def output_frequency(self):
+        return self._output_frequency
+
+    @output_frequency.setter
+    def output_frequency(self, output_freq: str):
+        self._output_frequency = []
         freq_list = ['runperiod', 'annual', 'monthly', 'daily', 'hourly', 'timestep']
         if output_freq not in freq_list:
             raise Exception('Parameter "output_freq" can be one of: {i}'.format(i=', '.join(freq_list)))
         freq_index = freq_list.index(output_freq)
-        self.output_frequency = freq_list[:freq_index+1]
+        self._output_frequency = freq_list[:freq_index+1]
 
     def run(self, **kwargs) -> str:
         if self.idf is None:
@@ -317,6 +324,8 @@ class EnergyPlusSimulation:
         if self.typ == 'local':
             return self.results_local(variables=variables, typ=typ, period=period)
         elif self.typ == 'remote':
+            if name is None:
+                raise Exception('Please provide "name" to access remote results')
             if sim_id is None:
                 raise Exception('Please provide simulation id to access remote results')
             return self.results_remote(variables=variables, name=name, sim_id=sim_id, typ=typ, period=period)
@@ -356,11 +365,17 @@ class EnergyPlusSimulation:
 
         return pd.read_json(response_json, orient='split')
 
-    def results_detailed(self, variable: str, typ: str = 'zone', period: str = 'monthly'):
+    def results_detailed(self, variable: str, name: str = None, sim_id: str = None,
+                         typ: str = 'zone', period: str = 'monthly'):
         if self.typ == 'local':
             return self.results_detailed_local(variable, typ, period)
         elif self.typ == 'remote':
-            return self.results_detailed_remote(variable, typ, period)
+            if name is None:
+                raise Exception('Please provide "name" to access remote results')
+            if sim_id is None:
+                raise Exception('Please provide "simulation id" to access remote results')
+            return self.results_detailed_remote(variable=variable, name=name, sim_id=sim_id,
+                                                typ=typ, period=period)
 
     def results_detailed_local(self, variable: str, typ: str, period: str):
 
@@ -376,7 +391,9 @@ class EnergyPlusSimulation:
 
         return df
 
-    def results_detailed_remote(self, variable: str, typ: str, period: str):
+    def results_detailed_remote(self, variable: str, name: str, sim_id: str,
+                                typ: str, period: str):
 
-        response_json = self.server.results_detailed(variable, typ, period)
+        response_json = self.server.results_detailed(variable=variable, name=name, sim_id=sim_id,
+                                                     typ=typ, period=period)
         return pd.read_json(response_json, orient='split')
