@@ -1,7 +1,13 @@
+from typing import Union, List, Tuple, Mapping
+
+import numpy as np
+import plotly.graph_objects as go
+from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection, Line3DCollection
+import matplotlib.pyplot as plt
+
 from firepy.model.geometry import Point, Vector, Line, Ray, Plane, Rectangle, Box, Face
 from firepy.model.building import BuildingSurface, FenestrationSurface, NonZoneSurface, Zone, Building, Ref
-import plotly.graph_objects as go
-from typing import Union, List, Tuple, Mapping
 
 Color = Union[str, Tuple[int, int, int, float]]
 
@@ -334,6 +340,11 @@ class BuildingViewer(GeometryViewer):
                  line_color: Color = 'grey',
                  opacity: float = 1,
                  face_colors: Union[Mapping[str, Color], Color] = 'darkorange',
+                 fen_lines: bool = True,
+                 fen_face: bool = True,
+                 fen_line_color: Color = 'grey',
+                 fen_face_color: Color = 'darkcyan',
+                 fen_opacity=0.3,
                  tag: str = None,
                  fen_tag: str = None):
         for zone in building.Zones:
@@ -343,6 +354,11 @@ class BuildingViewer(GeometryViewer):
                      line_color=line_color,
                      opacity=opacity,
                      face_colors=face_colors,
+                     fen_lines=fen_lines,
+                     fen_face=fen_face,
+                     fen_line_color=fen_line_color,
+                     fen_face_color=fen_face_color,
+                     fen_opacity=fen_opacity,
                      tag=tag,
                      fen_tag=fen_tag)
         for nzs in building.NonZoneSurfaces:
@@ -469,3 +485,143 @@ class BuildingViewer(GeometryViewer):
                 add_triangle(pi, 4, 0, 3)  # E
 
         return Face(points=points), (i_list, j_list, k_list)
+
+
+class SimpleViewer:
+    def __init__(self):
+        self.fig = plt.figure()
+        self.ax = self.fig.add_subplot(111, projection="3d")
+
+    def view(self):
+        # discard the view of axes
+        plt.grid(False)
+        plt.axis('off')
+
+        plt.show()
+
+    def add(self, obj: Union[List, Point, Vector, Line, Rectangle, Box, Face,
+                             BuildingSurface, FenestrationSurface, NonZoneSurface, Zone, Building], **kwargs):
+        if isinstance(obj, List):
+            for e in obj:
+                self.add(e, **kwargs)
+        elif isinstance(obj, BuildingSurface):
+            self.building_surface(obj, **kwargs)
+        elif isinstance(obj, FenestrationSurface):
+            self.fenestration_surface(obj, **kwargs)
+        elif isinstance(obj, NonZoneSurface):
+            self.non_zone_surface(obj, **kwargs)
+        elif isinstance(obj, Zone):
+            self.zone(obj, **kwargs)
+        elif isinstance(obj, Building):
+            self.building(obj, **kwargs)
+
+    def building_surface(self, bs: BuildingSurface,
+                         lines: bool = True,
+                         face: bool = True,
+                         line_color: Color = 'grey',
+                         face_color: Color = 'darkorange',
+                         opacity=1, tag: str = None,
+                         fen_lines: bool = True,
+                         fen_face: bool = True,
+                         fen_line_color: Color = 'grey',
+                         fen_face_color: Color = 'darkcyan',
+                         fen_opacity=0.3,
+                         fen_tag: str = None):
+        pass
+
+    def fenestration_surface(self, fs: FenestrationSurface,
+                             lines: bool = True,
+                             face: bool = True,
+                             line_color: Color = 'grey',
+                             face_color: Color = 'darkcyan',
+                             opacity=0.3, tag: str = None):
+        pass
+
+    def non_zone_surface(self, nzs: NonZoneSurface,
+                         lines: bool = True,
+                         face: bool = True,
+                         line_color: Color = 'darkgreen',
+                         face_color: Color = 'darkcyan'):
+        pass
+
+    def zone(self, zone: Zone,
+             lines: bool = True,
+             face: bool = True,
+             line_color: Color = 'grey',
+             opacity=1,
+             face_colors: Union[Mapping[str, Color], Color] = 'darkorange',
+             fen_lines: bool = True,
+             fen_face: bool = True,
+             fen_line_color: Color = 'grey',
+             fen_face_color: Color = 'darkcyan',
+             fen_opacity=0.3,
+             tag: str = None,
+             fen_tag: str = None):
+        pass
+
+    def building(self, building: Building,
+                 face: bool = True):
+
+        surf_ext_vertices = []
+        surf_int_vertices = []
+        win_vertices = []
+        points = []
+        for zone in building.Zones:
+            for surface in zone.BuildingSurfaces:
+                # create a collection of faces by listing all vertices of them
+                if surface.OutsideBoundaryCondition.lower() == 'outdoors':
+                    surf_ext_vertices.append([vertex.coordinates() for vertex in surface.vertices])
+                else:
+                    surf_int_vertices.append([vertex.coordinates() for vertex in surface.vertices])
+
+                # add window faces to the window collection
+                for win in surface.Fenestration:
+                    win_vertices.append([vertex.coordinates() for vertex in win.vertices])
+                # create a separate list of the points for the scatter plot
+                for vertex in surface.vertices:
+                    points.append(vertex.coordinates())
+        points = np.array(points)
+
+        surf_ext_faces = Poly3DCollection(surf_ext_vertices, linewidths=0.5, edgecolors='k')
+        if face:
+            surf_ext_faces.set_facecolor((1, 0.55, 0, 0.2))
+        else:
+            surf_ext_faces.set_facecolor((0, 0, 1, 0))
+        self.ax.add_collection(surf_ext_faces)
+
+        surf_int_faces = Poly3DCollection(surf_int_vertices, linewidths=0.2, edgecolors='gray')
+        if face:
+            surf_int_faces.set_facecolor((1, 0.55, 0, 0.2))
+        else:
+            surf_int_faces.set_facecolor((0, 0, 1, 0))
+        self.ax.add_collection(surf_int_faces)
+
+        win_faces = Poly3DCollection(win_vertices, linewidths=0.5, edgecolors='b')
+        if face:
+            win_faces.set_facecolor((0, 1, 1, 0.2))
+        else:
+            win_faces.set_facecolor((0, 0, 1, 0))
+
+        self.ax.add_collection(win_faces)
+
+        self.ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=0)
+
+        # Create cubic bounding box to simulate equal aspect ratio
+
+        # Get the largest size
+        x_length = points[:, 0].max() - points[:, 0].min()
+        y_width = points[:, 1].max() - points[:, 1].min()
+        z_height = points[:, 2].max() - points[:, 2].min()
+
+        # Create coordinates
+        max_range = max(x_length, y_width, z_height)
+        Xb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][
+            0].flatten() + 0.5 * max_range
+        Yb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][
+            1].flatten() + -0.5 * max_range
+        Zb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][
+            2].flatten() + 0.5 * max_range
+
+        # Plot box
+        for xb, yb, zb in zip(Xb, Yb, Zb):
+            self.ax.plot([xb], [yb], [zb], 'w')

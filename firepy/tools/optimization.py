@@ -1,6 +1,9 @@
 import pandas as pd
 
 def pareto_non_dominated(df: pd.DataFrame, objectives: list) -> pd.DataFrame:
+    # drop NA values
+    df = df.dropna(axis='index', subset=objectives)
+
     dominated = pd.Index([])
     non_dominated = pd.Index([])
     evaluated = pd.Index([])

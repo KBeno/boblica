@@ -105,7 +105,18 @@ class EnergyPlusSimulation:
         'surface': {
             'opaque loss': 'Surface Average Face Conduction Heat Transfer Energy',
             'glazing loss': 'Surface Window Heat Loss Energy',
-            'glazing gain': 'Surface Window Heat Gain Energy'
+            'glazing gain': 'Surface Window Heat Gain Energy',
+            'conduction rate': 'Surface Average Face Conduction Heat Transfer Rate per Area'
+        },
+        'balance': {
+            'internal gain': 'Zone Air Heat Balance Internal Convective Heat Gain Rate',
+            'convective': 'Zone Air Heat Balance Surface Convection Rate',
+            'interzone air': 'Zone Air Heat Balance Interzone Air Transfer Rate',
+            'outdoor ait': 'Zone Air Heat Balance Outdoor Air Transfer Rate',
+            'system air': 'Zone Air Heat Balance System Air Transfer Rate',
+            'system convective': 'Zone Air Heat Balance System Convective Heat Gain Rate',
+            'air storage': 'Zone Air Heat Balance Air Energy Storage Rate',
+            'deviation': 'Zone Air Heat Balance Deviation Rate'
         }
     }
 
@@ -121,7 +132,17 @@ class EnergyPlusSimulation:
         'equipment': 'J',
         'people': 'J',
 
-        'glazing gain': 'J'
+        'glazing gain': 'J',
+        'conduction rate': 'W/m2',
+
+        'internal gain': 'W',
+        'convective': 'W',
+        'interzone air': 'W',
+        'outdoor ait': 'W',
+        'system air': 'W',
+        'system convective': 'W',
+        'air storage': 'W',
+        'deviation': 'W',
     }
 
     def __init__(self, idf: IDF = None, epw_path: str = None, epw: str = None, output_freq: str = 'monthly',

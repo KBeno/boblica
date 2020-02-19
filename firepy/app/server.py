@@ -86,9 +86,10 @@ def setup():
     # get type of data
     content_type = request.args.get('type')
 
+    msg = None
     # epw -> Redis
     if content_type == 'epw':
-        app.logger.debug('Setting up epw for: {n}'.format(n=setup_name))
+        app.logger.info('Setting up epw for: {n}'.format(n=setup_name))
         content = request.get_data(as_text=True)
         R.set('{name}:epw'.format(name=setup_name), content)
         app.logger.debug('Setting up epw on simulation server')
@@ -96,42 +97,46 @@ def setup():
 
     # idf -> Redis
     if content_type == 'idf':
-        app.logger.debug('Setting up idf for: {n}'.format(n=setup_name))
+        app.logger.info('Setting up idf for: {n}'.format(n=setup_name))
         content = request.get_data(as_text=True)
         R.set('{name}:idf'.format(name=setup_name), content)
 
     # model -> Redis
     if content_type == 'model':
-        app.logger.debug('Setting up model for: {n}'.format(n=setup_name))
+        app.logger.info('Setting up model for: {n}'.format(n=setup_name))
         content = request.get_data()  # serialized Building object
         R.set('{name}:model'.format(name=setup_name), content)
 
     # parameters -> Redis
     if content_type == 'parameters':
-        app.logger.debug('Setting up parameters for: {n}'.format(n=setup_name))
+        app.logger.info('Setting up parameters for: {n}'.format(n=setup_name))
         content = request.get_data()  # serialized MutableMapping[str, Parameter] object
         R.set('{name}:parameters'.format(name=setup_name), content)
 
     # lca calculation -> Redis
     if content_type == 'lca_calculation':
-        app.logger.debug('Setting up LCA Calculation for: {n}'.format(n=setup_name))
+        app.logger.info('Setting up LCA Calculation for: {n}'.format(n=setup_name))
         content = request.get_data()  # serialized LCACalculation object
         R.set('{name}:lca_calculation'.format(name=setup_name), content)
 
     # cost calculation -> Redis
     if content_type == 'cost_calculation':
-        app.logger.debug('Setting up Cost Calculation for: {n}'.format(n=setup_name))
+        app.logger.info('Setting up Cost Calculation for: {n}'.format(n=setup_name))
         content = request.get_data()  # serialized CostCalculation object
         R.set('{name}:cost_calculation'.format(name=setup_name), content)
 
     # Check table in database
     if content_type == 'database':
         if RESULT_DB.has_table(setup_name):
-            app.logger.info('Result database has table named {n}, results will be overwritten'.format(n=setup_name))
-            query = 'DROP TABLE {n}'.format(n=setup_name)
-            RESULT_DB.execute(query)
+            app.logger.info('Result database has table named {n}, results will be appended'.format(n=setup_name))
+            msg = 'Results will be appended to existing table {n}'.format(n=setup_name)
+        else:
+            app.logger.info('New table named {n} will be created in database'.format(n=setup_name))
 
-    return 'OK'
+    if msg:
+        return 'OK - {m}'.format(m=msg)
+    else:
+        return 'OK'
 
 
 @app.route("/calculate", methods=['GET'])
@@ -183,7 +188,7 @@ def calculate():
     result_series['calculation_id'] = sim_id
     result_frame = result_series.to_frame().transpose()
 
-    result_frame.to_sql(name=name, con=RESULT_DB, if_exists='append')
+    result_frame.to_sql(name=name, con=RESULT_DB, if_exists='append', index=False)
 
     return jsonify(result.to_dict())
 
@@ -207,7 +212,10 @@ def status():
 
 @app.route("/results", methods=['GET'])
 def results():
-
+    """
+    get the results from the database
+    :return:
+    """
     # get the name of the calculation setup
     name = request.args.get('name')
     if name is None:
@@ -435,12 +443,45 @@ def get_energy_results_detailed():
     return jsonify(energy_calc_results.to_json(orient='split'))
 
 
+@app.route("/cleanup", methods=['GET'])
+def cleanup():
+    name = request.args.get('name')
+    if name is None:
+        return "Please provide 'name' argument to specify which setup tp cleanup"
+
+    target = request.args.get('target')
+    msg = ''
+    if target == 'results' or target is None:
+
+        if not RESULT_DB.has_table(name):
+            return 'No result found for name: {n}'.format(n=name)
+
+        query = 'DROP TABLE {n}'.format(n=name)
+        RESULT_DB.execute(query)
+
+        app.logger.info('Result table {n} has been cleared'.format(n=name))
+        msg += 'Existing table {n} has been cleared; '.format(n=name)
+
+    if target == 'simulations' or target is None:
+        app.logger.info('Deleting simulation results for {n}'.format(n=name))
+        msg += ENERGY_CALCULATION.server.clean_up(name=name)
+
+    if not msg:
+        return 'Unknown target: {t}'.format(t=target)
+    else:
+        return msg
+
+
 def update_params(name: str,
                   calculation_id: str = None) -> Tuple[MutableMapping[str, Parameter], Union[str, None]]:
     # update parameters in the setup
     app.logger.info('Loading parameters for {n} from redis'.format(n=name))
 
     param_dump = R.get('{name}:parameters'.format(name=name))
+    if param_dump is None:
+        msg = 'Unable to update model, no setup found for name: {n}'.format(n=name)
+        return {}, msg
+
     parameters: MutableMapping[str, Parameter] = dill.loads(param_dump)
     msg = None
 
@@ -457,16 +498,16 @@ def update_params(name: str,
     else:
         db_values = {n: None for n in parameters.keys()}
 
-    for name, param in parameters.items():
+    for par_name, param in parameters.items():
         if calculation_id is not None:
             # get value from previous calculations
-            value = db_values[name]
+            value = db_values[par_name]
         else:
             # get value from request argument
-            value = request.args.get(name)
+            value = request.args.get(par_name)
 
         if value is None:
-            msg = 'Missing value for parameter: {p}'.format(p=name)
+            msg = 'Missing value for parameter: {p}'.format(p=par_name)
             return parameters, msg
 
         # convert type of parameter
@@ -507,7 +548,7 @@ def update_model(name: str, parameters: MutableMapping[str, Parameter]) -> Tuple
     model: Building = dill.loads(R.get('{name}:model'.format(name=name)))
 
     reload(firepy.setup.functions)
-    from firepy.setup.functions import update_model, update_model
+    from firepy.setup.functions import update_model, update_model, idf_update_options
 
     model = update_model(parameters=parameters, model=model)
 
@@ -536,6 +577,7 @@ def run(name: str,
     :param model: Building model tu run calculation on
     :param idf: IDF representing the same model to use in simulation
     :param simulation_id: if simulation has been made before, the id of the simulation
+    :param simulation_options: optional dictionary to pass to customize the simulation
     :return: impact result and cost result
     """
 
@@ -559,7 +601,7 @@ def run(name: str,
         if zone_outputs:  # not an empty list
             ENERGY_CALCULATION.set_outputs(*zone_outputs, typ='zone')
         else:
-            ENERGY_CALCULATION.set_outputs('heating', 'cooling', typ='zone')
+            ENERGY_CALCULATION.set_outputs('heating', 'cooling', 'lights', typ='zone')
 
         surface_outputs: List = energy_calculation_options['outputs']['surface']
         if surface_outputs:  # not an empty list
@@ -571,7 +613,7 @@ def run(name: str,
 
     app.logger.info('Getting results for simulation with id: {sid}'.format(sid=simulation_id))
 
-    energy_calc_results = ENERGY_CALCULATION.results(variables=['heating', 'cooling'],
+    energy_calc_results = ENERGY_CALCULATION.results(variables=['heating', 'cooling', 'lights'],
                                                      name=name,
                                                      sim_id=simulation_id,
                                                      typ='zone', period='runperiod')

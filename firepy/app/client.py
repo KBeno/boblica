@@ -46,7 +46,7 @@ class RemoteClient:
             epw_text = epw_text.replace('\r\n', '\n')
             response = requests.post(url=url, params={'name': name, 'type': 'epw'}, data=epw_text)
             logger.debug('Response from server: ' + response.text)
-            if response.text != 'OK':
+            if not response.text.startswith('OK'):
                 return response.text
             else:
                 success['epw'] = response.text
@@ -56,7 +56,7 @@ class RemoteClient:
             idf_text = idf.idfstr()
             response = requests.post(url=url, params={'name': name, 'type': 'idf'}, data=idf_text)
             logger.debug('Response from server: ' + response.text)
-            if response.text != 'OK':
+            if not response.text.startswith('OK'):
                 return response.text
             else:
                 success['idf'] = response.text
@@ -66,7 +66,7 @@ class RemoteClient:
             model_dump = dill.dumps(model)
             response = requests.post(url=url, params={'name': name, 'type': 'model'}, data=model_dump)
             logger.debug('Response from server: ' + response.text)
-            if response.text != 'OK':
+            if not response.text.startswith('OK'):
                 return response.text
             else:
                 success['model'] = response.text
@@ -76,7 +76,7 @@ class RemoteClient:
             param_dump = dill.dumps(parameters)
             response = requests.post(url=url, params={'name': name, 'type': 'parameters'}, data=param_dump)
             logger.debug('Response from server: ' + response.text)
-            if response.text != 'OK':
+            if not response.text.startswith('OK'):
                 return response.text
             else:
                 success['parameters'] = response.text
@@ -86,7 +86,7 @@ class RemoteClient:
             lca_dump = dill.dumps(lca_calculation)
             response = requests.post(url=url, params={'name': name, 'type': 'lca_calculation'}, data=lca_dump)
             logger.debug('Response from server: ' + response.text)
-            if response.text != 'OK':
+            if not response.text.startswith('OK'):
                 return response.text
             else:
                 success['LCA Calculation'] = response.text
@@ -96,7 +96,7 @@ class RemoteClient:
             cost_dump = dill.dumps(cost_calculation)
             response = requests.post(url=url, params={'name': name, 'type': 'cost_calculation'}, data=cost_dump)
             logger.debug('Response from server: ' + response.text)
-            if response.text != 'OK':
+            if not response.text.startswith('OK'):
                 return response.text
             else:
                 success['Cost Calculation'] = response.text
@@ -104,12 +104,12 @@ class RemoteClient:
         logger.debug('Initiating result database on server')
         response = requests.post(url=url, params={'name': name, 'type': 'database'})
         logger.debug('Response from server: ' + response.text)
-        if response.text != 'OK':
+        if not response.text.startswith('OK'):
             return response.text
         else:
             success['Database'] = response.text
 
-        return pformat(success)
+        return '\n' + pformat(success)
 
     def calculate(self, name: str, parameters: Mapping[str, Union[float, int, str]]):
         url = self.url + '/calculate'
@@ -137,6 +137,20 @@ class RemoteClient:
             return df
         except JSONDecodeError:
             return response.text
+
+    def cleanup(self, name: str, target: str = None) -> str:
+        url = self.url + '/cleanup'
+
+        if target == 'results' or target is None:
+            logger.warning('Result database will be cleared for setup: {n}'.format(n=name))
+        if target == 'simulations' or target is None:
+            logger.warning('Simulation results will be deleted for setup: {n}'.format(n=name))
+
+        if input('Are you sure? (y/n): ') == 'y':
+            response = requests.get(url=url, params={'name': name, 'target': target})
+            return response.text
+        else:
+            logger.warning('Cleanup cancelled')
 
     def reinstate(self, name: str, calc_id: str) -> Mapping:
         url = self.url + '/reinstate'

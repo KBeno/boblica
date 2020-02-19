@@ -7,7 +7,7 @@ import pandas as pd
 import firepy.model.building
 import firepy.model.hvac
 from firepy.model.building import ObjectLibrary
-from firepy.tools.database import SqlDB, OLCA
+# from firepy.tools.database import SqlDB, OLCA
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +178,7 @@ class LCACalculation:
     def __init__(self, reference_service_period: int = 50,
                  life_cycle_data: Union[str, pd.DataFrame] = None,
                  impact_data: Union[str, pd.DataFrame] = None,
-                 db: SqlDB = None, olca: OLCA = None,
+                 db = None, olca = None,
                  matching_col: str = 'DbId', matching_property: str = 'DbId',
                  considered_objects: List[str] = None):
         """
@@ -311,6 +311,7 @@ class LCACalculation:
                                           firepy.model.building.FenestrationSurface,
                                           firepy.model.hvac.Heating,
                                           firepy.model.hvac.Cooling,
+                                          firepy.model.hvac.Lighting,
                                           firepy.model.hvac.HVAC,
                                           firepy.model.building.Building],
                          library: ObjectLibrary = None, **kwargs) -> ImpactResult:
@@ -380,6 +381,9 @@ class LCACalculation:
 
                 elif isinstance(obj, firepy.model.hvac.Cooling):
                     return self.__cooling(obj, **kwargs)  # cooling_demand
+
+                elif isinstance(obj, firepy.model.hvac.Lighting):
+                    return self.__lighting(obj, **kwargs)  # lighting_energy
 
                 elif isinstance(obj, firepy.model.hvac.HVAC):
                     return self.__hvac(obj, **kwargs)  # demands
@@ -1093,12 +1097,37 @@ class LCACalculation:
 
         return impact_result
 
+    def __lighting(self, lighting: firepy.model.hvac.Lighting, lighting_energy: float) -> impact_results:
+        """
+        Impact refers to one year
+        :param lighting:
+        :param lighting_energy: Total lighting (electric) energy in kWh/year
+        :return:
+        """
+        # Initiate impact result
+        impact_result = ImpactResult(basis_unit='year')
+        energy_source = lighting.energy_source  # Name or DbId
+        yearly_demand = lighting_energy * lighting.inefficiency  # gross demand
+
+        # Operation
+        operation = self.__operation(
+            energy_source=energy_source,
+            energy_demand=yearly_demand
+        )
+
+        impact_result.impacts.loc[:, 'B6'] = operation
+
+        # Add the result to the collection of results
+        self.impact_results[lighting.IuId] = impact_result
+
+        return impact_result
+
     def __hvac(self, hvac: firepy.model.hvac.HVAC, demands: pd.DataFrame) -> impact_results:
         """
         Impact refers to total reference period
         :param hvac:
-        :param demands: pandas DataFrame with two columns named 'heating' and 'cooling' containing the
-            yearly impact in the sum of the columns in kWh
+        :param demands: pandas DataFrame with three columns named 'heating', 'cooling' and 'lights'
+            containing the yearly impact in the sum of the columns in kWh
             e.g. output from energy calculation
         :return:
         """
@@ -1108,13 +1137,16 @@ class LCACalculation:
         # Yearly impact of heating and cooling
         heating_demand = abs(demands.loc[:, 'heating'].sum())
         cooling_demand = abs(demands.loc[:, 'cooling'].sum())
+        lighting_energy = abs(demands.loc[:, 'lights'].sum())
 
         heating_impact = self.calculate_impact(hvac.Heating, heating_demand=heating_demand)
         cooling_impact = self.calculate_impact(hvac.Cooling, cooling_demand=cooling_demand)
+        lighting_impact = self.calculate_impact(hvac.Lighting, lighting_energy=lighting_energy)
 
         # Add impact to the total
         impact_result.impacts = impact_result.impacts.add(heating_impact.impacts.mul(self.rsp), fill_value=0)
         impact_result.impacts = impact_result.impacts.add(cooling_impact.impacts.mul(self.rsp), fill_value=0)
+        impact_result.impacts = impact_result.impacts.add(lighting_impact.impacts.mul(self.rsp), fill_value=0)
 
         # Add the result to the collection of results
         self.impact_results[hvac.IuId] = impact_result
