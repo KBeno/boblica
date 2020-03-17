@@ -203,8 +203,11 @@ def status():
     setups = [k.decode() for k in R.keys()]
     setups = [s.split(':')[0] for s in setups]
     setups = list(set(setups))
+
+    result_tables = RESULT_DB.table_names()
     info = {
-        'setups': setups
+        'setups': setups,
+        'results': result_tables
     }
 
     return jsonify(info)
@@ -596,6 +599,9 @@ def run(name: str,
             ENERGY_CALCULATION.output_frequency = frequency
 
         ENERGY_CALCULATION.idf = idf
+
+        if energy_calculation_options['clear_existing_variables']:
+            ENERGY_CALCULATION.clear_outputs()
 
         zone_outputs: List = energy_calculation_options['outputs']['zone']
         if zone_outputs:  # not an empty list

@@ -1,13 +1,18 @@
-from typing import Union, List, Tuple, Mapping
+from typing import Union, List, Tuple, Mapping, MutableMapping
 
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection, Line3DCollection
 import matplotlib.pyplot as plt
+from eppy.modeleditor import IDF
 
 from firepy.model.geometry import Point, Vector, Line, Ray, Plane, Rectangle, Box, Face
 from firepy.model.building import BuildingSurface, FenestrationSurface, NonZoneSurface, Zone, Building, Ref
+from firepy.model.building import ObjectLibrary, Construction
+
+from firepy.calculation.lca import LCACalculation
 
 Color = Union[str, Tuple[int, int, int, float]]
 
@@ -615,13 +620,280 @@ class SimpleViewer:
 
         # Create coordinates
         max_range = max(x_length, y_width, z_height)
-        Xb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][
+        xb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][
             0].flatten() + 0.5 * max_range
-        Yb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][
+        yb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][
             1].flatten() + -0.5 * max_range
-        Zb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][
+        zb = 0.5 * max_range * np.mgrid[-1:2:2, -1:2:2, -1:2:2][
             2].flatten() + 0.5 * max_range
 
         # Plot box
-        for xb, yb, zb in zip(Xb, Yb, Zb):
-            self.ax.plot([xb], [yb], [zb], 'w')
+        for x, y, z in zip(xb, yb, zb):
+            self.ax.plot([x], [y], [z], 'w')
+
+
+class ResultViewer:
+
+    def __init__(self, calculation: LCACalculation):
+        self.calculation = calculation
+
+    def sunburst(self, model: Building, indicator: str, cutoff: float = 0.01) -> go.Figure:
+        import locale
+        locale.setlocale(locale.LC_ALL, '')
+
+        from firepy.calculation.lca import IMPACT_CATEGORIES, ImpactResult
+
+        impact_unit = IMPACT_CATEGORIES[indicator]['Impact Unit']
+        stage_names = self.get_stage_names()
+
+        labels = []
+        ids = []
+        parents = []
+        values = []
+
+        # Create first level - total
+        building_impacts = self.calculation.calculate_impact(model).impacts.loc[indicator, :]
+        total_value = building_impacts.sum()
+
+        labels.append('{ind}<br>{val:n}<br>{un}'.format(ind=indicator, val=total_value, un=impact_unit))
+        ids.append('Total')
+        parents.append('')
+        values.append(int(total_value / total_value * 1000))
+
+        def add_by_stage(impacts: pd.Series, label: str, parent: str):
+            for stage in ['A1-3', 'A4', 'A5', 'B4', 'B6', 'C1-4']:
+                stage_value = impacts[stage]
+                if stage_value / total_value > cutoff:
+                    if parent == 'Total':
+                        labels.append('{s}<br>{v:n}'.format(s=stage_names[stage], v=stage_value))
+                        ids.append(stage)
+                        parents.append('Total')
+                        values.append(int(stage_value / total_value * 1000))
+                    else:
+                        labels.append('{s}<br>{v:n}'.format(s=label, v=stage_value))
+                        ids.append(stage + parent + label)
+                        parents.append(stage + parent)
+                        values.append(int(stage_value / total_value * 1000))
+
+        # Create second level - main life cycle stages
+        add_by_stage(building_impacts, '', 'Total')
+
+        # Third level - envelope / internal / HVAC
+        # Fourth level - fenestration / wall / slab // heating / cooling / lights
+        # Fifth level - Materials
+        envelope = ImpactResult(basis_unit='total')
+        internal = ImpactResult(basis_unit='total')
+
+        fenestration = ImpactResult(basis_unit='total')
+        envelope_wall = ImpactResult(basis_unit='total')
+        envelope_slab = ImpactResult(basis_unit='total')
+        internal_wall = ImpactResult(basis_unit='total')
+        internal_slab = ImpactResult(basis_unit='total')
+
+        for zone in model.Zones:
+            for surface in zone.BuildingSurfaces:
+                surf_impact: ImpactResult = self.calculation.calculate_impact(surface)
+                if surface.OutsideBoundaryCondition.lower() in ['outdoors', 'ground']:
+                    envelope += surf_impact
+                    if surface.SurfaceType.lower() == 'wall':
+                        windows_impact = ImpactResult(basis_unit='total')
+                        for window in surface.Fenestration:
+                            window_impact: ImpactResult = self.calculation.calculate_impact(window)
+                            windows_impact += window_impact
+                        fenestration += windows_impact
+                        envelope_wall += surf_impact - windows_impact
+                    else:
+                        envelope_slab += surf_impact
+                else:
+                    internal += surf_impact
+                    if surface.SurfaceType.lower() == 'wall':
+                        internal_wall += surf_impact
+                    else:
+                        internal_slab += surf_impact
+
+        # Ignore Non-zone Surfaces for now
+
+        envelope_impacts = envelope.impacts.loc[indicator, :]
+        internal_impacts = internal.impacts.loc[indicator, :]
+        hvac_impacts = self.calculation.calculate_impact(model.HVAC).impacts.loc[indicator, :]
+        add_by_stage(envelope_impacts, 'Envelope', '')
+        add_by_stage(internal_impacts, 'Internal', '')
+        add_by_stage(hvac_impacts, 'HVAC', '')
+
+        fenestration_impacts = fenestration.impacts.loc[indicator, :]
+        envelope_wall_impacts = envelope_wall.impacts.loc[indicator, :]
+        envelope_slab_impacts = envelope_slab.impacts.loc[indicator, :]
+        add_by_stage(fenestration_impacts, 'Fenestration', 'Envelope')
+        add_by_stage(envelope_wall_impacts, 'Walls', 'Envelope')
+        add_by_stage(envelope_slab_impacts, 'Slabs', 'Envelope')
+
+        internal_wall_impacts = internal_wall.impacts.loc[indicator, :]
+        internal_slab_impacts = internal_slab.impacts.loc[indicator, :]
+        add_by_stage(internal_wall_impacts, 'Walls', 'Internal')
+        add_by_stage(internal_slab_impacts, 'Slabs', 'Internal')
+
+        heating = self.calculation.calculate_impact(model.HVAC.Heating) * self.calculation.rsp
+        cooling = self.calculation.calculate_impact(model.HVAC.Cooling) * self.calculation.rsp
+        lights = self.calculation.calculate_impact(model.HVAC.Lighting) * self.calculation.rsp
+        heating_impacts = heating.impacts.loc[indicator, :]
+        cooling_impacts = cooling.impacts.loc[indicator, :]
+        lights_impacts = lights.impacts.loc[indicator, :]
+
+        add_by_stage(heating_impacts, 'Heating', 'HVAC')
+        add_by_stage(cooling_impacts, 'Cooling', 'HVAC')
+        add_by_stage(lights_impacts, 'Lights', 'HVAC')
+
+        trace = go.Sunburst(
+            labels=labels,
+            ids=ids,
+            parents=parents,
+            values=values,
+            branchvalues="total",
+            # with using this attribute it is possible to add very many leafs
+            # maxdepth=3
+        )
+
+        fig = go.Figure(
+            data=trace
+        )
+        fig.update_layout(
+            autosize=False,
+            width=800,
+            height=800,
+            template='plotly_white'
+        )
+        return fig
+
+    @staticmethod
+    def get_stage_names() -> MutableMapping:
+        from firepy.calculation.lca import LIFE_CYCLE_STAGES
+
+        names = {}
+        for stage_code, stage in LIFE_CYCLE_STAGES.items():
+            names[stage_code] = stage['ShortName']
+            for module_code, module_name in stage['Modules'].items():
+                names[module_code] = module_name
+
+        return names
+
+
+class ScheduleViewer:
+
+    @staticmethod
+    def view(idf: IDF, schedule_name: str):
+        """
+        View all schedule profiles in an EnergyPlus compact schedule
+        :param idf:  eppy IDF object
+        :param schedule_name: the name of the schedule set
+        :return: None
+        """
+        # get the schedule
+        schedule = idf.getobject('Schedule:Compact'.upper(), schedule_name)
+
+        # collect information from idf
+        schedule_dict = {}
+        actual_through = None
+        actual_for = None
+        actual_until = None
+        for value in schedule.fieldvalues[3:]:
+            if value.startswith('Through'):
+                actual_through = value
+                schedule_dict[actual_through] = {}
+            elif value.startswith('For'):
+                actual_for = value
+                schedule_dict[actual_through][actual_for] = {}
+            elif value.startswith('Until'):
+                actual_until = value
+                schedule_dict[actual_through][actual_for][actual_until] = None
+            else:
+                schedule_dict[actual_through][actual_for][actual_until] = value
+
+        # create DataFrame from schedule
+        schedule_frame = pd.DataFrame(index=[i for i in range(25)])
+        for s_through, s_for in schedule_dict.items():
+            for ts_for, ts_until in s_for.items():
+                for_name = ts_for.split(':')[1].strip()
+                for until, val in ts_until.items():
+                    until_int = int(until.split(':')[1].strip())
+                    schedule_frame.loc[until_int, for_name] = float(val)
+        schedule_frame = schedule_frame.fillna(method='backfill')
+
+        # create plots
+        n = schedule_frame.shape[1]
+        limits = (schedule_frame.stack().min(), schedule_frame.stack().max())
+        fig, axs = plt.subplots(nrows=1, ncols=n)
+        for i, schedule_name in enumerate(schedule_frame.columns.to_list()):
+            schedule = schedule_frame[schedule_name]
+            axs[i].fill_between(x=schedule.index, y1=schedule.values, step='pre', facecolor='palegoldenrod',
+                                edgecolor='gray')
+            axs[i].set_title(schedule_name)
+            axs[i].set_xticks(schedule.index, minor=True)
+            axs[i].set_xticks([0, 6, 12, 18, 24], minor=False)
+            axs[i].set_xticklabels(['0:00', '6:00', '12:00', '18:00', '24:00'])
+            axs[i].set_ylim(limits[0], limits[1] * 1.05)
+        fig.set_size_inches(3.5 * n, 2.2)
+        plt.show()
+
+    @staticmethod
+    def list(idf: IDF) -> List[str]:
+        """
+        List all compact schedules in the idf
+        :param idf: eppy IDF
+        :return: list of names
+        """
+        schedules = idf.idfobjects['Schedule:Compact']
+        return [sch.Name for sch in schedules]
+
+
+class ConstructionViewer:
+
+    def __init__(self):
+        self.colors = {}
+        self.names = {}
+
+    @staticmethod
+    def list_materials(library: ObjectLibrary) -> List[str]:
+        return [mat.Name for mat in library.opaque_materials.values()]
+
+    def view(self, construction_name: str, library: ObjectLibrary):
+        if library.default_key != 'Name':
+            library.change_key(to='Name')
+        construction = library.constructions[construction_name]
+
+        color_index = 0
+        fig, ax = plt.subplots()
+        spacing = 0
+        min_text_pos = 0.0
+        ax.plot([0, 1], [0, 0], color='gray', linewidth=1)
+        for material in construction.Layers[::-1]:
+            material = library.get(material)
+
+            if material.Name not in self.colors:
+                color = 'C{}'.format(color_index)
+                color_index += 1
+                self.colors[material.Name] = color
+            else:
+                color = self.colors[material.Name]
+
+            if material.Name not in self.names:
+                name = material.Name
+                self.names[material.Name] = name
+            else:
+                name = self.names[material.Name]
+
+            bottom = spacing
+            top = spacing + material.Thickness
+
+            text_pos = max((bottom + top) / 2, min_text_pos)
+            min_text_pos = text_pos + 0.07
+            ax.text(x=0.2, y=text_pos, s='{t} cm'.format(t=material.Thickness * 100),
+                    verticalalignment='center', color=color, horizontalalignment='right',
+                    bbox=dict(facecolor='white', alpha=0.8, edgecolor='white', boxstyle=('Round, pad=0.15')))
+            ax.text(x=0.25, y=text_pos, s=name, verticalalignment='center', color=color,
+                    bbox=dict(facecolor='white', alpha=0.8, edgecolor='white', boxstyle=('Round, pad=0.15')))
+
+            ax.plot([0, 1], [top, top], color='gray', linewidth=1)
+            ax.fill_between(x=[0, 1], y1=[bottom, bottom], y2=[top, top], alpha=0.6, facecolor=color)
+            spacing = top
+        ax.axis('off')
+        plt.show()
