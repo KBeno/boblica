@@ -1,13 +1,15 @@
-from typing import Mapping, Union, MutableMapping, List
+from typing import Mapping, Union, MutableMapping, List, Tuple
 from pathlib import Path
 import logging
+import uuid
+import requests
 
 import pandas as pd
+import olca
 
 import firepy.model.building
 import firepy.model.hvac
 from firepy.model.building import ObjectLibrary
-# from firepy.tools.database import SqlDB, OLCA
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,7 @@ IMPACT_CATEGORIES = {
 LIFE_CYCLE_STAGES = {
     'A1-3': {
         'Name': 'Product Stage',
+        'ShortName': 'Production',
         'Modules': {
             'A1': 'Raw material supply',
             'A2': 'Transport',
@@ -55,6 +58,7 @@ LIFE_CYCLE_STAGES = {
     },
     'A4-5': {
         'Name': 'Construction Process Stage',
+        'ShortName': 'Construction',
         'Modules': {
             'A4': 'Transport',
             'A5': 'Construction-installation process',
@@ -62,6 +66,7 @@ LIFE_CYCLE_STAGES = {
     },
     'B1-7': {
         'Name': 'Use Stage',
+        'ShortName': 'Use',
         'Modules': {
             'B1': 'Use',
             'B2': 'Maintenance',
@@ -74,6 +79,7 @@ LIFE_CYCLE_STAGES = {
     },
     'C1-4': {
         'Name': 'End Of Life Stage',
+        'ShortName': 'EndOfLife',
         'Modules': {
             'C1': 'De-construction demolition',
             'C2': 'Transport',
@@ -130,6 +136,22 @@ class ImpactResult:
     def impacts(self, new: pd.DataFrame):
         self._impacts = new
 
+    def __add__(self, other: 'ImpactResult') -> 'ImpactResult':
+        if self.BasisUnit != other.BasisUnit:
+            raise UnitOfMeasurementError('Units of ImpactResults are not compatible: {} + {}'.format(
+                self.BasisUnit, other.BasisUnit
+            ))
+        self.impacts = self.impacts.add(other.impacts, fill_value=0)
+        return self
+
+    def __sub__(self, other: 'ImpactResult') -> 'ImpactResult':
+        return self + (other * -1)
+
+    def __mul__(self, other: Union[int, float]) -> 'ImpactResult':
+        self.impacts = self.impacts.mul(other)
+        # TODO update BasisUnit of result
+        return self
+
 
 class InventoryItem:
     # TODO unused
@@ -179,7 +201,7 @@ class LCACalculation:
                  life_cycle_data: Union[str, pd.DataFrame] = None,
                  impact_data: Union[str, pd.DataFrame] = None,
                  db = None, olca = None,
-                 matching_col: str = 'DbId', matching_property: str = 'DbId',
+                 matching_col: str = 'Name', matching_property: str = 'Name',
                  considered_objects: List[str] = None):
         """
 
@@ -294,6 +316,105 @@ class LCACalculation:
         elif isinstance(source, pd.DataFrame):
             # TODO sql db will need to serve the same methods as used for a DataFrame
             self._impact_data = source
+
+    @staticmethod
+    def generate_tables(building: firepy.model.building.Building) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Generate a template for LifeCycleData and ImpactData to be filled put by the user
+        It collects all the used material and resource names that need an input
+
+        :param building: the building model to generate the tables for
+        :return: LifeCycleData, ImpactData as pd.DataFrames
+        """
+
+        # Create empty DataFrames
+        lca_data = pd.DataFrame(columns=['Name', 'DbId', 'ModelName', 'ProductionId', 'TransportId', 'WasteTreatmentId',
+                                         'WasteTreatmentTransportId', 'LifeTime', 'CuttingWaste', 'SurfaceWeight',
+                                         'Density'])
+
+        column_labels = [('Metadata', 'DbId'), ('Metadata', 'Name'), ('Metadata', 'Unit'), ('Metadata', 'OlcaId'),
+                         ('Impact categories', '[Impact category]'), ('Impact categories', '[...]')]
+        cols = pd.MultiIndex.from_tuples(column_labels)
+        impact_data = pd.DataFrame(columns=cols)
+
+        counter = 1
+
+        def add_lca_data(mat, lca_dat, required: List[str] = None):
+            lca_dat.loc[counter, 'Name'] = '{t}_{c}'.format(t=mat.__class__.__name__, c=counter)
+            lca_dat.loc[counter, 'ModelName'] = mat.Name
+            lca_dat.loc[counter, 'ProductionId'] = 'p{n:03n}'.format(n=counter)
+            lca_dat.loc[counter, 'TransportId'] = 't{n:03n}'.format(n=1)
+            lca_dat.loc[counter, 'WasteTreatmentId'] = 'w{n:03n}'.format(n=counter)
+            lca_dat.loc[counter, 'WasteTreatmentTransportId'] = 'wt{n:03n}'.format(n=1)
+            if required is not None:
+                for req in required:
+                    lca_dat.loc[counter, req] = '[required]'
+
+            return lca_dat
+
+        def add_impact_data(mat, unit: str, impact_dat):
+            impact_data_lin = pd.DataFrame(columns=cols)
+            material_name = '{t}_{c}'.format(t=mat.__class__.__name__, c=counter)
+            impact_data_lin.loc[0, ('Metadata', 'Name')] = 'Production of {n}'.format(n=material_name)
+            impact_data_lin.loc[0, ('Metadata', 'DbId')] = 'p{n:03n}'.format(n=counter)
+            impact_data_lin.loc[0, ('Metadata', 'Unit')] = unit
+            impact_data_lin.loc[1, ('Metadata', 'Name')] = 'Waste treatment of {n}'.format(n=material_name)
+            impact_data_lin.loc[1, ('Metadata', 'DbId')] = 'w{n:03n}'.format(n=counter)
+            impact_data_lin.loc[1, ('Metadata', 'Unit')] = unit
+
+            impact_dat = impact_dat.append(impact_data_lin, ignore_index=True)
+            return impact_dat
+
+        for material in building.Library.opaque_materials.values():
+            lca_data = add_lca_data(material, lca_data, required=['LifeTime', 'CuttingWaste'])
+            impact_data = add_impact_data(material.Name, '[kg or m2]', impact_data)
+            counter += 1
+
+        for material in building.Library.window_materials.values():
+            lca_data = add_lca_data(material, lca_data, required=['LifeTime', 'CuttingWaste', 'SurfaceWeight'])
+            impact_data = add_impact_data(material.Name, '[kg or m2]', impact_data)
+            counter += 1
+
+        for material in building.Library.shade_materials.values():
+            lca_data = add_lca_data(material, lca_data, required=['LifeTime', 'CuttingWaste', 'Density'])
+            impact_data = add_impact_data(material, '[kg or m2]', impact_data)
+            counter += 1
+
+        for material in building.Library.blind_materials.values():
+            lca_data = add_lca_data(material, lca_data, required=['LifeTime', 'CuttingWaste', 'Density'])
+            impact_data = add_impact_data(material, '[kg or m2]', impact_data)
+            counter += 1
+
+        impact_data_lines = pd.DataFrame(columns=cols)
+        impact_data_lines.loc[0, ('Metadata', 'Name')] = 'Transportation of materials'
+        impact_data_lines.loc[0, ('Metadata', 'DbId')] = 't{n:03n}'.format(n=1)
+        impact_data_lines.loc[0, ('Metadata', 'Unit')] = '[kg]'
+        impact_data_lines.loc[1, ('Metadata', 'Name')] = 'Transportation of waste'
+        impact_data_lines.loc[1, ('Metadata', 'DbId')] = 'tw{n:03n}'.format(n=1)
+        impact_data_lines.loc[1, ('Metadata', 'Unit')] = '[kg]'
+
+        impact_data = impact_data.append(impact_data_lines, ignore_index=True)
+
+        energy_sources = set([h.energy_source for h in [building.HVAC.Heating,
+                                                        building.HVAC.Cooling,
+                                                        building.HVAC.Lighting]])
+
+        for energy_source in energy_sources:
+            lca_data.loc[counter, 'Name'] = 'EnergyCarrier_{n}'.format(n=energy_source)
+            lca_data.loc[counter, 'ModelName'] = energy_source
+            lca_data.loc[counter, 'ProductionId'] = 'p{n:03n}'.format(n=counter)
+
+            impact_data_lines = pd.DataFrame(columns=cols)
+            impact_data_lines.loc[0, ('Metadata', 'Name')] = 'Energy from EnergyCarrier_{n}'.format(n=energy_source)
+            impact_data_lines.loc[0, ('Metadata', 'DbId')] = 'p{n:03n}'.format(n=counter)
+            impact_data_lines.loc[0, ('Metadata', 'Unit')] = '[kWh or MJ]'
+            impact_data = impact_data.append(impact_data_lines, ignore_index=True)
+
+            counter += 1
+
+        impact_data = impact_data.sort_values(by=('Metadata', 'DbId')).reset_index(drop=True)
+
+        return lca_data, impact_data
 
     def __impact_categories(self):
         return self.ImpactData['Impact categories'].columns.to_list()
@@ -1152,6 +1273,307 @@ class LCACalculation:
         self.impact_results[hvac.IuId] = impact_result
 
         return impact_result
+
+
+class OpenLCAIpc:
+    """
+    openLCA ipc implementation
+    """
+    def __init__(self, host: str, port: int):
+        self.client = olca.Client(port=10)  # a random number, will be updated in the next lines
+        self._host = 'to_update'
+        self._port = 10  # random
+        self.host = host
+        self.port = port
+
+        # Table containing information about processes to update when localizing the product system
+        self.energy_updates_data = None
+
+    @property
+    def host(self) -> str:
+        return self._host
+
+    @host.setter
+    def host(self, url: str):
+        if url.startswith('http'):
+            self._host = url
+        else:
+            self._host = 'http://{u}'.format(u=url)
+        self.client.url = '{h}:{p}'.format(h=self.host, p=self.port)
+
+    @property
+    def port(self) -> int:
+        return self._port
+
+    @port.setter
+    def port(self, number: int):
+        self._port = number
+        self.client.url = '{h}:{p}'.format(h=self.host, p=self.port)
+
+    @property
+    def energy_updates_data(self) -> pd.DataFrame:
+        """
+        DataFrame containing all processes to update in the product system
+        :return:
+        """
+        return self._energy_updates_data
+
+    @energy_updates_data.setter
+    def energy_updates_data(self, source: Union[str, Path, pd.DataFrame]):
+        if isinstance(source, str):
+            # Read from path
+            self._energy_updates_data = pd.read_csv(source, index_col='code')
+        elif isinstance(source, Path):
+            self._energy_updates_data = pd.read_csv(str(source), index_col='code')
+        elif isinstance(source, pd.DataFrame):
+            self._energy_updates_data = source
+
+    def backup_process(self, process_id: str):
+        """
+        Backup an existing process in the openLCA database
+        :param process_id: the id of the process in openLCA
+        :return: None
+        """
+        process = self.client.get(olca.Process, process_id)
+        backup = olca.Process()
+        backup.from_json(process.to_json())
+        backup.id = str(uuid.uuid4())
+        backup.name = backup.name + ' backup'
+        self.client.insert(backup)
+
+    def localize_product_system(self, system_ref: olca.Ref = None, system_name: str = None,
+                                system_id: str = None) -> str:
+        """
+        Update product system with the energy changes described in the energy_update_data
+
+        :param system_ref: olca Ref to product system
+        :param system_name: name of the product system in the database
+        :param system_id: id of the product system in the database
+        One of the above three is required - priority order is same as argument order
+        :return: product system ref id
+        """
+        if system_ref is not None:
+            system_id = system_ref.id
+        elif system_name is not None:
+            logger.debug('Finding product system: {sn}'.format(sn=system_name))
+            system_ref = self.client.find(olca.ProductSystem, system_name)
+            system_id = system_ref.id
+        elif system_id is not None:
+            system_id = system_id
+        else:
+            raise Exception('Please provide any of the following: system_ref / system_name / system_id')
+
+        logger.debug('Getting product system from database')
+        system = self.client.get(olca.ProductSystem, system_id)
+
+        original_location = system.reference_process.location
+
+        logger.info('Localizing product system: {sn} - {loc}'.format(sn=system.name, loc=original_location))
+
+        if self.energy_updates_data is None:
+            raise Exception('Please set energy_updates_data attribute first before running localization')
+
+        if original_location not in self.energy_updates_data.columns:
+            message = 'Cannot update product system of original location: {loc}'.format(loc=original_location)
+            message += ' Please provide data for the location in the energy_updates_data'
+            raise Exception(message)
+        updates = self.energy_updates_data[self.energy_updates_data[original_location] == 'update'].index.values
+        for change_code in updates:
+
+            process_old_id = self.energy_updates_data.loc[change_code, 'ID old']
+            process_old_name = self.energy_updates_data.loc[change_code, 'Process Name old']
+            process_old_loc = self.energy_updates_data.loc[change_code, 'Location old']
+            process_new_id = self.energy_updates_data.loc[change_code, 'ID new']
+            process_new_loc = self.energy_updates_data.loc[change_code, 'Location new']
+
+            logger.debug('    Updating: {name} - {loc} -> {nloc}'.format(name=process_old_name,
+                                                                         loc=process_old_loc,
+                                                                         nloc=process_new_loc))
+            process_new = self.client.get(olca.Process, process_new_id)
+
+            logger.debug('    Checking for new process in systems processes')
+            sys_process_ids = [proc.id for proc in system.processes]
+            if process_new_id in sys_process_ids:
+                logger.debug('    Process found')
+            else:
+                logger.debug('    Adding process to systems processes')
+                process_new_ref = olca.ProcessRef
+                process_new_ref.id = process_new.id
+                process_new_ref.name = process_new.name
+                process_new_ref.category_path = process_new.category.category_path
+                process_new_ref.location = process_new.location
+                process_new_ref.process_type = olca.ProcessType.UNIT_PROCESS
+                system.processes.append(process_new_ref)
+
+            logger.debug('    Creating new provider from Process')
+            new_provider = olca.Ref()
+            new_provider.id = process_new.id
+            new_provider.name = process_new.name
+            new_provider.category_path = process_new.category.category_path
+
+            logger.debug('    Finding process links (id: {id})'.format(id=process_old_id))
+            for link in system.process_links:
+                if link.provider.id == process_old_id:
+                    logger.debug('        Updating process link: {ln}'.format(ln=link.process.name))
+                    link.provider = new_provider
+
+        # log adaptation to product systems description
+        if system.description is not None:
+            system.description = 'HU adapted dataset - ' + system.description
+        else:
+            system.description = 'HU adapted dataset'
+
+        system.reference_process.location = 'HU'
+        system.name = system.name + ' - HU'
+
+        logger.info('Updating product system in database')
+        self.client.update(system)
+
+        logger.debug('Finished updating')
+        return system.id
+
+    def get_impact_methods(self) -> pd.DataFrame:
+        """
+        List all Impact assessment methods from the database
+        :return: DataFrame with columns Name, Id
+        """
+        methods = [[method.name, method.id] for method in self.client.get_descriptors(olca.ImpactMethod)]
+        df = pd.DataFrame(data=methods, columns=['Name', 'Id'])
+        return df
+
+    def get_impact_method(self, method_name: str = None, method_id: str = None) -> olca.ImpactMethod:
+        """
+        Get impact method for id or name
+        :param method_name: Name of the impact assessment method in the database
+        :param method_id: Id of the impact assessment method in the database
+        :return: olca ImpactMethod
+        """
+
+        if method_name is not None:
+            method_ref = self.client.find(olca.ImpactMethod, method_name)
+            method = self.client.get(olca.ImpactMethod, method_ref.id)
+        elif method_id is not None:
+            method = self.client.get(olca.ImpactMethod, method_id)
+        else:
+            raise Exception('Please provide either "method_name" or "method_id"')
+
+        return method
+
+    def calculate_product_system(self, method: olca.ImpactMethod,
+                                 system_ref: olca.Ref = None, system_name: str = None, system_id: str = None,
+                                 localize=True) -> pd.Series:
+        """
+        Calculate impacts of a product system with optional localization
+
+        :param method: the impact assessment method to calculate with
+
+        :param system_ref: olca Ref to product system
+        :param system_name: name of the product system in the database
+        :param system_id: id of the product system in the database
+        One of the above three is required - priority order is same as argument order
+
+        :param localize: weather to update the system with localizations
+        :return: pandas Series with all impact categories
+        """
+
+        if system_ref is not None:
+            system_id = system_ref.id
+        elif system_name is not None:
+            logger.debug('Finding product system: {sn}'.format(sn=system_name))
+            system_ref = self.client.find(olca.ProductSystem, system_name)
+            system_id = system_ref.id
+        elif system_id is not None:
+            system_id = system_id
+        else:
+            raise Exception('Please provide any of the following: system_ref / system_name / system_id')
+
+        logger.debug('Getting product system')
+        system = self.client.get(olca.ProductSystem, system_id)
+
+        if localize:
+            logger.debug('Checking system localization')
+            if not system.description.startswith('HU adapted'):
+                logger.info('Updating system: {sn}'.format(sn=system.name))
+                self.localize_product_system(system_id=system_id)
+            else:
+                logger.debug('System already adapted (updated)')
+
+        logger.info('Calculating system: {sn}'.format(sn=system.name))
+
+        logger.debug('Setting up calculation')
+        setup = olca.CalculationSetup()
+        setup.calculation_type = olca.CalculationType.SIMPLE_CALCULATION
+        setup.impact_method = method
+        setup.product_system = system
+
+        setup.amount = 1.0
+
+        # calculate the result
+        logger.debug('Calculating...')
+        result = self.client.calculate(setup)
+
+        logger.debug('Generating result table')
+        impacts = {ir.impact_category.name: ir.value for ir in result.impact_results}
+
+        result_df = pd.Series(data=impacts)
+
+        logger.debug('Disposing result')
+        self.client.dispose(result)
+
+        return result_df
+
+    def create_product_system(self, process_ref: olca.ProcessRef = None, process_name: str = None,
+                              process_id: str = None) -> str:
+        """
+        Create product system from process
+        :param process_ref: olca ProcessRef to process
+        :param process_name: name of the process in the database
+        :param process_id: id of the process in the database
+        One of the above three is required - priority order is same as argument order
+        :return: Product System Id
+        """
+        if process_ref is not None:
+            process_id = process_ref.id
+        elif process_name is not None:
+            logger.debug('Finding product system: {sn}'.format(sn=process_name))
+            process_ref = self.client.find(olca.Process, process_name)
+            process_id = process_ref.id
+        elif process_id is not None:
+            process_id = process_id
+        else:
+            raise Exception('Please provide any of the following: process_ref / process_name / process_id')
+
+        # This is not implemented yet in olca-ipc module, so generate the request manually
+        def olca_post(client: olca.Client, method: str, params) -> dict:
+            req = {
+                'jsonrpc': '2.0',
+                'id': client.next_id,
+                'method': method,
+                'params': params
+            }
+            client.next_id += 1
+            resp = requests.post(client.url, json=req).json()  # type: dict
+            err = resp.get('error')  # type: dict
+            if err is not None:
+                raise Exception('%i: %s' % (err.get('code'), err.get('message')))
+            result = resp.get('result')
+            if result is None:
+                raise Exception(
+                    'No error and no result: invalid JSON-RPC response')
+            return result
+
+        request_params = {
+            "processId": process_id,
+            # 'preferredType': "",  # UNIT_PROCESS (default), LCI_RESULT
+            # 'providerLinking': ""  # PREFER (default), IGNORE, ONLY
+        }
+        logger.info('Creating product system for id: {id}'.format(id=process_id))
+        response = olca_post(self.client, 'create/product_system', request_params)
+
+        system_ref_id = response['@id']
+        logger.info('Product system created with id: {id}'.format(id=system_ref_id))
+
+        return system_ref_id
 
 
 class UnitOfMeasurementError(Exception):
