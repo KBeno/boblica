@@ -46,7 +46,7 @@ class OpaqueMaterial:
         self.Thickness = thickness  # [m]
         self.Conductivity = conductivity
         self.Density = density  # [kg/m3]
-        self.SpecificHeat = specific_heat
+        self.SpecificHeat = specific_heat  # [J/kgK]
         self.ThermalAbsorptance = thermal_absorptance
         self.SolarAbsorptance = solar_absorptance
         self.VisibleAbsorptance = visible_absorptance
@@ -276,10 +276,11 @@ class Construction:
     def __str__(self):
         return self.Name + " (Construction)"
 
-    def thickness(self, materials: dict):
+    def thickness(self, library: "ObjectLibrary"):
         t = 0
         for layer in self.Layers:
-            t += materials[layer.RefId].Thickness
+            material = library.get(layer)
+            t += material.Thickness
         return t
 
     def get_ref(self):
@@ -354,9 +355,10 @@ class FenestrationSurface(Surface):
     def __str__(self):
         return self.Name + " (FenestrationSurface)"
 
-    def shading_factor(self, shadings: Mapping[str, Shading]):
+    def shading_factor(self, library: "ObjectLibrary"):
         if self.Shading is not None:
-            return shadings[self.Shading.RefId].ShadingFactor, shadings[self.Shading.RefId].IsScheduled
+            shading = library.get(self.Shading)
+            return shading.ShadingFactor, shading.IsScheduled
         else:
             return 1, False
 
@@ -450,8 +452,7 @@ class Zone:
 
         heated_area = 0
         for surface in self.BuildingSurfaces:
-            if surface.SurfaceType == "FLOOR" or surface.SurfaceType == "ExposedFloor" \
-                    or surface.SurfaceType == "SlabOnGrade":
+            if surface.SurfaceType.lower() in ["floor", "exposedfloor", "slabongrade"]:
                 heated_area += surface.area()
         return heated_area
 

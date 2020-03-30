@@ -10,7 +10,7 @@ import dill
 import pandas as pd
 from eppy.modeleditor import IDF
 
-from firepy.app.settings import Parameter
+from firepy.tools.optimization import Parameter
 from firepy.model.building import Building
 from firepy.calculation.lca import LCACalculation
 from firepy.calculation.cost import CostCalculation
@@ -27,11 +27,28 @@ class RemoteClient:
     def setup(self,
               name: str,
               epw: Path = None,
+              weather_data: Path = None,
               idf: IDF = None,
               model: Building = None,
               parameters: MutableMapping[str, Parameter] = None,
               lca_calculation: LCACalculation = None,
-              cost_calculation: CostCalculation = None) -> str:
+              cost_calculation: CostCalculation = None,
+              energy_calculation: str = None,
+              init_db: bool = True) -> str:
+        """
+
+        :param name: Name of the calculation setup tp create or update
+        :param epw: Path to epw file for weather data for simulation
+        :param weather_data: Path to csv weather data for steady state energy calculation
+        :param idf: eppy IDF model of the building
+        :param model: converted firepy model of the building
+        :param parameters: dict of firepy Parameters to use for parametric definition
+        :param lca_calculation:
+        :param cost_calculation:
+        :param energy_calculation: 'simulation' or 'steady_state'
+        :param init_db: set True (default) to create results database for the setup
+        :return: success message
+        """
         url = self.url + '/setup'
 
         logger.info('Setting up calculation: {n} at: {u}'.format(n=name, u=self.url))
@@ -45,6 +62,17 @@ class RemoteClient:
             # change windows type newline characters to unix type
             epw_text = epw_text.replace('\r\n', '\n')
             response = requests.post(url=url, params={'name': name, 'type': 'epw'}, data=epw_text)
+            logger.debug('Response from server: ' + response.text)
+            if not response.text.startswith('OK'):
+                return response.text
+            else:
+                success['epw'] = response.text
+
+        if weather_data is not None:
+            logger.debug('Setting up weather data on server')
+            weather = pd.read_csv(str(weather_data), header=[0,1], index_col=[0,1])
+            content = weather.to_json(orient='split')
+            response = requests.post(url=url, params={'name': name, 'type': 'weather_data'}, data=content)
             logger.debug('Response from server: ' + response.text)
             if not response.text.startswith('OK'):
                 return response.text
@@ -101,13 +129,26 @@ class RemoteClient:
             else:
                 success['Cost Calculation'] = response.text
 
-        logger.debug('Initiating result database on server')
-        response = requests.post(url=url, params={'name': name, 'type': 'database'})
-        logger.debug('Response from server: ' + response.text)
-        if not response.text.startswith('OK'):
-            return response.text
-        else:
-            success['Database'] = response.text
+        if init_db:
+            logger.debug('Initiating result database on server')
+            response = requests.post(url=url, params={'name': name, 'type': 'database'})
+            logger.debug('Response from server: ' + response.text)
+            if not response.text.startswith('OK'):
+                return response.text
+            else:
+                success['Database'] = response.text
+
+        if energy_calculation:
+            if energy_calculation not in ['simulation', 'steady_state']:
+                return 'Energy calculation type can be one of the following: simulation / steady_state'
+            logger.debug('Setting up Energy Calculation type on server')
+            response = requests.post(url=url,
+                                     params={'name': name, 'type': 'energy_calculation', 'mode': energy_calculation})
+            logger.debug('Response from server: ' + response.text)
+            if not response.text.startswith('OK'):
+                return response.text
+            else:
+                success['Energy Calculation'] = response.text
 
         return '\n' + pformat(success)
 

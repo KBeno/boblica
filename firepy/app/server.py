@@ -2,6 +2,7 @@ import logging
 import os
 import configparser
 import json
+import uuid
 from importlib import reload
 from pathlib import Path
 from typing import MutableMapping, Tuple, Union, List, Mapping
@@ -14,9 +15,9 @@ from flask import Flask, request, jsonify
 from eppy.modeleditor import IDF
 
 import firepy.setup.functions
-from firepy.app.settings import Parameter
+from firepy.tools.optimization import Parameter
 from firepy.tools.serializer import IdfSerializer
-from firepy.calculation.energy import RemoteConnection, EnergyPlusSimulation
+from firepy.calculation.energy import RemoteConnection, EnergyPlusSimulation, SteadyStateCalculation
 from firepy.model.building import Building
 from firepy.calculation.lca import ImpactResult, LCACalculation
 from firepy.calculation.cost import CostResult, CostCalculation
@@ -48,7 +49,9 @@ R = redis.Redis(host=redis_host, port=redis_port)
 #   calculation_name:model,
 #   calculation_name:parameters,
 #   calculation_name:lca_calculation,
-#   calculation_name:cost_calculation]
+#   calculation_name:cost_calculation,
+#   calculation_name:energy_calculation,
+#   calculation_name:weather_data]
 
 # setup energy calculation server from config
 
@@ -56,6 +59,8 @@ ep_host = config['Calculation.Energy'].get('host')
 ep_port = config['Calculation.Energy'].getint('port')
 server = RemoteConnection(host=ep_host, port=ep_port)
 ENERGY_CALCULATION = EnergyPlusSimulation(typ='remote', remote_server=server)
+
+ENERGY_STEADY_STATE = SteadyStateCalculation()
 
 # setup idf_serializer -> from config (no need for shared data)
 idd_path_string = config['Firepy'].get('idd_path')
@@ -132,6 +137,21 @@ def setup():
             msg = 'Results will be appended to existing table {n}'.format(n=setup_name)
         else:
             app.logger.info('New table named {n} will be created in database'.format(n=setup_name))
+
+    # Energy calculation option
+    if content_type == 'energy_calculation':
+        app.logger.info('Setting up Energy Calculation for: {n}'.format(n=setup_name))
+        mode = request.args.get('mode')
+        R.set('{name}:energy_calculation'.format(name=setup_name), mode)
+
+    # Energy calculation option
+    if content_type == 'weather_data':
+        app.logger.info('Setting up Weather Data for: {n}'.format(n=setup_name))
+        content = request.args.get_data(as_text=True)  # pd.DataFrame in JSON format with orient='split'
+        R.set('{name}:weather_data'.format(name=setup_name), content)
+        # setup data in energy calculation
+        weather_data = pd.read_json(content, orient='split')
+        ENERGY_STEADY_STATE.weather_data = weather_data
 
     if msg:
         return 'OK - {m}'.format(m=msg)
@@ -578,54 +598,66 @@ def run(name: str,
     simulation will run, existing results will be read
     :param name: name of the calculation setup
     :param model: Building model tu run calculation on
+    :param energy_calculation: 'simulation' (default) or 'steady_state' type of energy calculation
     :param idf: IDF representing the same model to use in simulation
     :param simulation_id: if simulation has been made before, the id of the simulation
     :param simulation_options: optional dictionary to pass to customize the simulation
     :return: impact result and cost result
     """
+    energy_calculation = R.get('{name}:energy_calculation'.format(name=name))
 
     # energy calculation
-    if simulation_options is None:
-        reload(firepy.setup.functions)
-        from firepy.setup.functions import energy_calculation_options
-    else:
-        energy_calculation_options = simulation_options
-
-    if simulation_id is None:
-        app.logger.info('Running simulation')
-
-        frequency = energy_calculation_options['output_resolution']
-        if frequency is not None:
-            ENERGY_CALCULATION.output_frequency = frequency
-
-        ENERGY_CALCULATION.idf = idf
-
-        if energy_calculation_options['clear_existing_variables']:
-            ENERGY_CALCULATION.clear_outputs()
-
-        zone_outputs: List = energy_calculation_options['outputs']['zone']
-        if zone_outputs:  # not an empty list
-            ENERGY_CALCULATION.set_outputs(*zone_outputs, typ='zone')
+    if energy_calculation == 'simulation':
+        if simulation_options is None:
+            reload(firepy.setup.functions)
+            from firepy.setup.functions import energy_calculation_options
         else:
-            ENERGY_CALCULATION.set_outputs('heating', 'cooling', 'lights', typ='zone')
+            energy_calculation_options = simulation_options
 
-        surface_outputs: List = energy_calculation_options['outputs']['surface']
-        if surface_outputs:  # not an empty list
-            ENERGY_CALCULATION.set_outputs(*surface_outputs, typ='surface')
+        if simulation_id is None:
+            app.logger.info('Running simulation')
 
-        simulation_id = ENERGY_CALCULATION.run(name=name)
+            frequency = energy_calculation_options['output_resolution']
+            if frequency is not None:
+                ENERGY_CALCULATION.output_frequency = frequency
 
-        app.logger.info('Simulation ready, id: {sid}'.format(sid=simulation_id))
+            ENERGY_CALCULATION.idf = idf
 
-    app.logger.info('Getting results for simulation with id: {sid}'.format(sid=simulation_id))
+            if energy_calculation_options['clear_existing_variables']:
+                ENERGY_CALCULATION.clear_outputs()
 
-    energy_calc_results = ENERGY_CALCULATION.results(variables=['heating', 'cooling', 'lights'],
-                                                     name=name,
-                                                     sim_id=simulation_id,
-                                                     typ='zone', period='runperiod')
+            zone_outputs: List = energy_calculation_options['outputs']['zone']
+            if zone_outputs:  # not an empty list
+                ENERGY_CALCULATION.set_outputs(*zone_outputs, typ='zone')
+            else:
+                ENERGY_CALCULATION.set_outputs('heating', 'cooling', 'lights', typ='zone')
+
+            surface_outputs: List = energy_calculation_options['outputs']['surface']
+            if surface_outputs:  # not an empty list
+                ENERGY_CALCULATION.set_outputs(*surface_outputs, typ='surface')
+
+            simulation_id = ENERGY_CALCULATION.run(name=name)
+
+            app.logger.info('Simulation ready, id: {sid}'.format(sid=simulation_id))
+
+        app.logger.info('Getting results for simulation with id: {sid}'.format(sid=simulation_id))
+
+        energy_calc_results = ENERGY_CALCULATION.results(variables=['heating', 'cooling', 'lights'],
+                                                         name=name,
+                                                         sim_id=simulation_id,
+                                                         typ='zone', period='runperiod')
+        calculation_id = simulation_id
+
+    elif energy_calculation == 'steady_state':
+        calculation_id = str(uuid.uuid1())
+        app.logger.info('Running steady state energy calculation with id: {id}'.format(id=calculation_id))
+        energy_calc_results = ENERGY_STEADY_STATE.calculate(model)
+
+    else:
+        raise Exception('Energy calculation option "{ec}" not implemented.'.format(ec=energy_calculation))
 
     # impact calculation
-    app.logger.info('Calculating life cycle impact for: {id}'.format(id=simulation_id))
+    app.logger.info('Calculating life cycle impact for: {id}'.format(id=calculation_id))
 
     lca_calculation: LCACalculation = dill.loads(R.get('{name}:lca_calculation'.format(name=name)))
     lca_calculation.clear_cache()
@@ -634,7 +666,7 @@ def run(name: str,
     R.set('{name}:lca_calculation'.format(name=name), dill.dumps(lca_calculation))
 
     # cost calculation
-    app.logger.info('Calculating life cycle costs for: {id}'.format(id=simulation_id))
+    app.logger.info('Calculating life cycle costs for: {id}'.format(id=calculation_id))
 
     cost_calculation: CostCalculation = dill.loads(R.get('{name}:cost_calculation'.format(name=name)))
     cost_calculation.clear_cache()
@@ -642,7 +674,7 @@ def run(name: str,
     cost_result = cost_calculation.calculate_cost(model, demands=energy_calc_results)
     R.set('{name}:cost_calculation'.format(name=name), dill.dumps(cost_calculation))
 
-    return lca_result, cost_result, simulation_id
+    return lca_result, cost_result, calculation_id
 
 
 # use only for development:

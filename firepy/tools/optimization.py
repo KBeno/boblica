@@ -1,4 +1,16 @@
+from typing import Union
+
 import pandas as pd
+
+
+class Parameter:
+
+    def __init__(self, name: str, typ: str, value: Union[str, float, int] = None, limits: tuple = (None, None)):
+        self.name = name
+        self.value = value
+        self.type = typ
+        self.limits = limits
+
 
 def pareto_non_dominated(df: pd.DataFrame, objectives: list) -> pd.DataFrame:
     # drop NA values

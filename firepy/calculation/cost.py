@@ -1,4 +1,4 @@
-from typing import Mapping, Union, MutableMapping, List
+from typing import Mapping, Union, MutableMapping, List, Tuple
 from pathlib import Path
 import logging
 
@@ -7,7 +7,6 @@ import pandas as pd
 import firepy.model.building
 import firepy.model.hvac
 from firepy.model.building import ObjectLibrary
-# from firepy.tools.database import SqlDB  # ,OLCA
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +53,7 @@ class CostCalculation:
         self.match_prop = matching_property
 
         self.considered = considered_objects
+        self.ignored = []
 
         # Life Cycle Data can be given:
         #   - directly by a DataFrame or a csv address
@@ -128,6 +128,91 @@ class CostCalculation:
         elif isinstance(source, pd.DataFrame):
             self._cost_data = source
 
+    @staticmethod
+    def generate_tables(building: firepy.model.building.Building) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Generate a template for LifeCycleData and CostData to be filled by the user
+        It collects all the used material and resource names that need an input
+
+        :param building: the building model to generate the tables for
+        :return: LifeCycleData, CostData as pd.DataFrames
+        """
+
+        # Create empty DataFrames
+        lca_data = pd.DataFrame(columns=['Name', 'DbId', 'ModelName', 'CostId',
+                                         'LifeTime', 'CuttingWaste', 'SurfaceWeight', 'Density'])
+
+        column_labels = [('Metadata', 'DbId'), ('Metadata', 'Name'),
+                         ('Costs', 'Production'), ('Costs', 'Installation'),
+                         ('Units', 'Production'), ('Units', 'Installation')]
+        cols = pd.MultiIndex.from_tuples(column_labels)
+        cost_data = pd.DataFrame(columns=cols)
+
+        counter = 1
+
+        def add_lca_data(mat, lca_dat, required: List[str] = None):
+            lca_dat.loc[counter, 'Name'] = '{t}_{c}'.format(t=mat.__class__.__name__, c=counter)
+            lca_dat.loc[counter, 'ModelName'] = mat.Name
+            lca_dat.loc[counter, 'CostId'] = 'c{n:03n}'.format(n=counter)
+            if required is not None:
+                for req in required:
+                    lca_dat.loc[counter, req] = '[required]'
+
+            return lca_dat
+
+        def add_cost_data(mat, unit: str, cost_dat):
+            cost_data_lin = pd.DataFrame(columns=cols)
+            material_name = '{t}_{c}'.format(t=mat.__class__.__name__, c=mat.Name)
+            cost_data_lin.loc[0, ('Metadata', 'Name')] = 'Costs of {n}'.format(n=material_name)
+            cost_data_lin.loc[0, ('Metadata', 'DbId')] = 'c{n:03n}'.format(n=counter)
+            cost_data_lin.loc[0, ('Units', 'Production')] = unit
+            cost_data_lin.loc[0, ('Units', 'Installation')] = unit
+
+            cost_dat = cost_dat.append(cost_data_lin, ignore_index=True)
+            return cost_dat
+
+        for material in building.Library.opaque_materials.values():
+            lca_data = add_lca_data(material, lca_data, required=['LifeTime', 'CuttingWaste'])
+            cost_data = add_cost_data(material, '[kg or m2 or m3]', cost_data)
+            counter += 1
+
+        for material in building.Library.window_materials.values():
+            lca_data = add_lca_data(material, lca_data, required=['LifeTime', 'CuttingWaste', 'SurfaceWeight'])
+            cost_data = add_cost_data(material, '[kg or m2 or m3]', cost_data)
+            counter += 1
+
+        for material in building.Library.shade_materials.values():
+            lca_data = add_lca_data(material, lca_data, required=['LifeTime', 'CuttingWaste', 'Density'])
+            cost_data = add_cost_data(material, '[kg or m2 or m3]', cost_data)
+            counter += 1
+
+        for material in building.Library.blind_materials.values():
+            lca_data = add_lca_data(material, lca_data, required=['LifeTime', 'CuttingWaste', 'Density'])
+            cost_data = add_cost_data(material, '[kg or m2 or m3]', cost_data)
+            counter += 1
+
+        energy_sources = set([h.energy_source for h in [building.HVAC.Heating,
+                                                        building.HVAC.Cooling,
+                                                        building.HVAC.Lighting]])
+
+        for energy_source in energy_sources:
+            lca_data.loc[counter, 'Name'] = 'EnergyCarrier_{n}'.format(n=energy_source)
+            lca_data.loc[counter, 'ModelName'] = energy_source
+            lca_data.loc[counter, 'CostId'] = 'c{n:03n}'.format(n=counter)
+
+            cost_data_lines = pd.DataFrame(columns=cols)
+            cost_data_lines.loc[0, ('Metadata', 'Name')] = 'Energy from EnergyCarrier_{n}'.format(n=energy_source)
+            cost_data_lines.loc[0, ('Metadata', 'DbId')] = 'c{n:03n}'.format(n=counter)
+            cost_data_lines.loc[0, ('Units', 'Production')] = '[kWh or MJ]'
+            cost_data_lines.loc[0, ('Units', 'Installation')] = '[kWh or MJ]'
+            cost_data = cost_data.append(cost_data_lines, ignore_index=True)
+
+            counter += 1
+
+        cost_data = cost_data.sort_values(by=('Metadata', 'DbId')).reset_index(drop=True)
+
+        return lca_data, cost_data
+
     def clear_cache(self):
         self._cost_results = {}
 
@@ -165,6 +250,8 @@ class CostCalculation:
                                 firepy.model.building.BlindMaterial)):
 
                 if self.considered is not None and getattr(obj, self.match_prop) not in self.considered:
+                    if getattr(obj, self.match_prop) not in self.ignored:
+                        self.ignored.append(getattr(obj, self.match_prop))
                     return self.__null_result(obj)
 
                 else:

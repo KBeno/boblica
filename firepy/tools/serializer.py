@@ -838,6 +838,13 @@ class IdfSerializer:
             raise Exception('Neither Shading_Device_Material_Name nor Construction_with_Shading_Name in {st}'.format(
                 st=ep_shading_control.Name))
 
+        is_scheduled_value = ep_shading_control.Shading_Control_Is_Scheduled
+        if is_scheduled_value.lower() == 'yes':
+            is_scheduled = True
+        elif is_scheduled_value.lower() == 'no':
+            is_scheduled = False
+        else:
+            raise Exception('Cannot parse IsScheduled value of: {v}'.format(v=is_scheduled_value))
         shading = Shading(
             name=ep_shading_control.Name,
             typ=ep_shading_control.Shading_Type,
@@ -845,7 +852,7 @@ class IdfSerializer:
             material=fp_material,
             construction=fp_construction,
             shading_factor=sh_factor,
-            is_scheduled=ep_shading_control.Shading_Control_Is_Scheduled,
+            is_scheduled=is_scheduled,
             # distance_to_glass=dist_to_glass,
             # slat_width=slat_width,
             # slat_separation=slat_separation,

@@ -28,8 +28,11 @@ class Parameter:
         self.type = typ
         self.limits = limits
 
-
+# DEPRECATED
 class CalculationSetup:
+    """
+    Deprecated Class
+    """
 
     def __init__(self, name, idf_parser: IdfSerializer, model: Building, parameters: MutableMapping[str, Parameter],
                  energy_calculation: EnergyPlusSimulation, lca_calculation: LCACalculation,
