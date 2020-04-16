@@ -4,4 +4,5 @@ firepy/tools/database.py
 examples/
 firepy/app/flaskapp.py
 firepy/app/flasksetup.py
-firepy/setup/
+firepy/setup/config.ini
+firepy/setup/functions.py
