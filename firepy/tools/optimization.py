@@ -1,15 +1,73 @@
-from typing import Union
+from typing import Union, List, Tuple
+import os
 
 import pandas as pd
+import numpy as np
 
 
 class Parameter:
 
-    def __init__(self, name: str, typ: str, value: Union[str, float, int] = None, limits: tuple = (None, None)):
+    def __init__(self, name: str, typ: str, value: Union[str, float, int] = None,
+                 limits: Tuple[float, float] = (None, None), step: float = None, options: List[str] = None):
+        """
+
+        :param name:
+        :param typ: 'str' or 'float'
+        :param value:
+        :param limits:
+        :param options:
+        """
         self.name = name
         self.value = value
         self.type = typ
         self.limits = limits
+        self.step = step
+        if options is not None:
+            self.options = options
+        elif step is not None:
+            lower, upper = limits
+            self.options = np.arange(lower, upper + step, step)
+
+    def random(self):
+        if self.type == 'str':
+            if self.options is not None:
+                return np.random.choice(self.options)
+            else:
+                raise Exception('No options given for parameter: {}'.format(self.name))
+        elif self.type == 'float':
+            if self.step is None:
+                raise Exception('No limits given for parameter {}'.format(self.name))
+            else:
+                return np.random.choice(self.options)
+
+
+class MonteCarloSimulation:
+
+    def __init__(self, client, name: str):
+        self.client = client
+        self.name = name
+
+    @property
+    def parameters(self) -> List[Parameter]:
+        return self._parameters
+
+    @parameters.setter
+    def parameters(self, param_list: List[Parameter]):
+        self._parameters = param_list
+
+    def setup(self, name: str):
+        self.parameters = self.client.get_full_params(name=name)
+        self.name = name
+
+    def next(self, seed: int = None):
+        if seed is None:
+            # seed the generator from the computer to enable parallel runs
+            np.random.seed(int.from_bytes(os.urandom(4), byteorder='little'))
+        else:
+            # use the provided seed to enable reproducibility
+            np.random.seed(seed)
+        params = {p.name: p.random() for p in self.parameters}
+        self.client.calculate(name=self.name, parameters=params)
 
 
 def pareto_non_dominated(df: pd.DataFrame, objectives: list) -> pd.DataFrame:
@@ -61,3 +119,4 @@ def pareto_non_dominated(df: pd.DataFrame, objectives: list) -> pd.DataFrame:
             break
 
     return df.loc[non_dominated, :]
+

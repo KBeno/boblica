@@ -699,11 +699,16 @@ class IdfSerializer:
         if shading.Construction is not None:
             idf_kwargs['Construction_with_Shading_Name'] = shading.Construction.RefName
 
+        if shading.IsScheduled:
+            is_scheduled = 'Yes'
+        else:
+            is_scheduled = 'No'
+
         self.idf.newidfobject(
             key='WindowProperty:ShadingControl'.upper(),
             Name=shading.Name,
             Shading_Type=shading.Type,
-            Shading_Control_Is_Scheduled=shading.IsScheduled,
+            Shading_Control_Is_Scheduled=is_scheduled,
             # Shading_Device_Material_Name=shading.Material.Name,
             **idf_kwargs
         )
@@ -737,7 +742,11 @@ class IdfSerializer:
         idf_shading = self.idf.getobject('WindowProperty:ShadingControl'.upper(), shading.Name)
 
         idf_shading.Shading_Type = shading.Type
-        idf_shading.Shading_Control_Is_Scheduled = shading.IsScheduled
+        if shading.IsScheduled:
+            idf_shading.Shading_Control_Is_Scheduled = 'Yes'
+        else:
+            idf_shading.Shading_Control_Is_Scheduled = 'No'
+
         if shading.Material is not None:
             idf_shading.Shading_Device_Material_Name = shading.Material.RefName
         if shading.Construction is not None:
@@ -945,6 +954,8 @@ class IdfSerializer:
             optional_kwargs['Frame_and_Divider_Name'] = window.FrameName
         if window.Multiplier is not None:
             optional_kwargs['Multiplier'] = window.Multiplier
+        if window.Shading is not None:
+            optional_kwargs['Shading_Control_Name'] = window.Shading.RefName
 
         self.idf.newidfobject(
             key='FenestrationSurface:Detailed'.upper(),
@@ -954,7 +965,7 @@ class IdfSerializer:
             # Building_Surface_Name=,
             # Outside_Boundary_Condition_Object=None,
             # View_Factor_to_Ground=,
-            Shading_Control_Name=window.Shading.RefName,
+            # Shading_Control_Name=window.Shading.RefName,
             # Frame_and_Divider_Name=,
             # Multiplier=window.Multiplier,
             Number_of_Vertices=len(window.vertices),
@@ -968,7 +979,8 @@ class IdfSerializer:
 
         idf_window.Surface_Type = window.SurfaceType
         idf_window.Construction_Name = window.Construction.RefName
-        idf_window.Shading_Control_Name = window.Shading.RefName
+        if window.Shading is not None:
+            idf_window.Shading_Control_Name = window.Shading.RefName
         if window.FrameName is not None:
             idf_window.Frame_and_Divider_Name = window.FrameName
         idf_window.Multiplier = window.Multiplier

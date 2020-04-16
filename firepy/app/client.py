@@ -36,6 +36,7 @@ class RemoteClient:
               energy_calculation: str = None,
               init_db: bool = True) -> str:
         """
+        Setup the server with the following options. The options can also be set independently.
 
         :param name: Name of the calculation setup tp create or update
         :param epw: Path to epw file for weather data for simulation
@@ -71,13 +72,13 @@ class RemoteClient:
         if weather_data is not None:
             logger.debug('Setting up weather data on server')
             weather = pd.read_csv(str(weather_data), header=[0,1], index_col=[0,1])
-            content = weather.to_json(orient='split')
+            content = dill.dumps(weather)
             response = requests.post(url=url, params={'name': name, 'type': 'weather_data'}, data=content)
             logger.debug('Response from server: ' + response.text)
             if not response.text.startswith('OK'):
                 return response.text
             else:
-                success['epw'] = response.text
+                success['weather'] = response.text
 
         if idf is not None:
             logger.debug('Setting up IDF on server')
@@ -153,6 +154,15 @@ class RemoteClient:
         return '\n' + pformat(success)
 
     def calculate(self, name: str, parameters: Mapping[str, Union[float, int, str]]):
+        """
+        Calculate the impact based on the parameters sent in the args of the request
+        Model is updated, calculations are made and results are written in the database
+        This is the entry point for external optimization algorithms
+
+        :param name: Name of the calculation setup
+        :param parameters: Parameters as a dict
+        :return: result of the evaluation function as a dict
+        """
         url = self.url + '/calculate'
         payload = {'name': name}
         payload.update(parameters)
@@ -163,6 +173,10 @@ class RemoteClient:
             return response.text
 
     def status(self):
+        """
+        Get status of server (setups and result tables)
+        :return:
+        """
         url = self.url + '/status'
         response = requests.get(url=url)
         try:
@@ -180,6 +194,14 @@ class RemoteClient:
             return response.text
 
     def cleanup(self, name: str, target: str = None) -> str:
+        """
+        Cleanup server from stored data if target is not specified both will be deleted
+        Prompts for confirmation
+
+        :param name: name of the calculation setup
+        :param target: 'results' / 'simulations'
+        :return: message
+        """
         url = self.url + '/cleanup'
 
         if target == 'results' or target is None:
@@ -194,6 +216,15 @@ class RemoteClient:
             logger.warning('Cleanup cancelled')
 
     def reinstate(self, name: str, calc_id: str) -> Mapping:
+        """
+        Same as calculate() but the results are not saved to the database and the parameters are
+        retrieved from the result database based on the calculation id
+        Use this to update the state of the server to further analyse the model
+
+        :param name:
+        :param calc_id:
+        :return:
+        """
         url = self.url + '/reinstate'
         response = requests.get(url=url, params={'name': name, 'id': calc_id})
         try:
@@ -203,6 +234,26 @@ class RemoteClient:
 
     def instate(self, name: str, parameters: Mapping[str, Union[float, int, str]],
                 options: Mapping = None) -> Mapping:
+        """
+        Update state of server for the desired parameters and evaluate.
+        Calculation results will not be saved to database.
+
+        :param name: Name of the calculation setup
+        :param parameters: parameters as a dict to run calculation for
+        :param options: simulation options in the following patter
+            {
+                'outputs': 'all' or {
+                    'zone': [
+                        'heating' / 'cooling' / 'lights' / 'infiltration' / 'solar gains' / 'glazing loss' /
+                        'opaque loss' /'ventilation' / 'equipment' / 'people' ],
+                    'surface': [
+                        'opaque loss' / 'glazing loss' / 'glazing gain' ]
+                },
+                'output_resolution': 'runperiod' / 'runperiod' / 'annual' / 'monthly' / 'daily' / 'hourly' / 'timestep',
+                'clear_existing_variables': True
+            }
+        :return: result, simulation id and calculation time in a dict
+        """
         url = self.url + '/instate'
         payload = {'name': name}
         payload.update(parameters)
@@ -216,6 +267,12 @@ class RemoteClient:
             return response.text
 
     def get_model(self, name: str) -> Building:
+        """
+        Return the actual model from the server
+
+        :param name:
+        :return:
+        """
         url = self.url + '/model'
         response = requests.get(url=url, params={'name': name})
         try:
@@ -230,6 +287,21 @@ class RemoteClient:
         try:
             return response.json()
         except JSONDecodeError:
+            return response.text
+
+    def get_full_params(self, name: str) -> List[Parameter]:
+        """
+        Get Parameter objects from server
+        :param name: name of the calculation setup
+        :return: list with Parameter objects
+        """
+        url = self.url + '/parameters/full'
+        response = requests.get(url=url, params={'name': name})
+        try:
+            param_dict = dill.loads(response.content)
+            params: List[Parameter] = [p for p in param_dict.values()]
+            return params
+        except dill.UnpicklingError:
             return response.text
 
     def get_lca(self, name: str) -> LCACalculation:
@@ -250,13 +322,26 @@ class RemoteClient:
         except dill.UnpicklingError:
             return response.text
 
-    def get_energy(self, name: str, calc_id: str,
+    def get_energy(self, name: str, calc_id: str = None,
                    variables: List[str] = None,
                    typ: str = 'zone',
                    period: str = 'runperiod') -> pd.DataFrame:
+        """
+        Retrieves the energy calculation results from the server. If steady state calculation is used,
+        the result is a DataFrame with columns: 'heating' 'cooling', 'lights. If simulation is used,
+        the result is specified with the other input parameters
+
+        :param name: name of the calculation setup
+        :param calc_id: id of a previously run simulation (omitted is steady state calculation)
+        :param variables: variables to get from the simulation (omitted is steady state calculation)
+        :param typ: 'zone' (default) / 'surface' / 'balance' (omitted is steady state calculation)
+        :param period: 'runperiod' (default) / 'annual' / 'monthly' / 'daily' / 'hourly' / 'timestep'
+            (omitted is steady state calculation)
+        :return: pandas DataFrame with the requested data
+        """
         url = self.url + '/energy'
         if variables is None:
-            variables = ['heating', 'cooling']
+            variables = ['heating', 'cooling', 'lights']
         response = requests.get(url=url, params={'name': name,
                                                  'id': calc_id,
                                                  'variables': variables,

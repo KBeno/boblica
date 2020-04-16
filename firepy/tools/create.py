@@ -1,4 +1,5 @@
 from typing import List, Union, Mapping
+import logging
 
 import pandas as pd
 
@@ -6,6 +7,8 @@ from firepy.model.building import OpaqueMaterial, WindowMaterial, ShadeMaterial,
 from firepy.model.building import BuildingSurface, FenestrationSurface, Zone, NonZoneSurface, Building
 from firepy.model.building import Ref, ObjectLibrary
 from firepy.model.geometry import Rectangle, Vector, Point, Box, move
+
+logger = logging.getLogger(__name__)
 
 
 class OpaqueMaterialCreator:
@@ -183,8 +186,8 @@ class FenestrationCreator:
     def by_ratio(building_surface: BuildingSurface, construction: Ref, win_wall_ratio: float,
                  sill_height: float, window_height: float, break_up_number: int = 1,
                  name: str = None, shading: Ref = None, frame_name: str = None) -> List[FenestrationSurface]:
-        if win_wall_ratio >= 0.95:
-            win_wall_ratio = 0.95
+        if win_wall_ratio >= 0.9:
+            win_wall_ratio = 0.9
         elif win_wall_ratio <= 0:
             return []
 
@@ -210,20 +213,50 @@ class FenestrationCreator:
             horizontal_side = l_vectors[1]
 
         if sill_height + window_height >= vertical_side.length():
-            # TODO make note of change in the height
+            message = 'Height of windows changed from {o:.2f} '.format(o=window_height)
             window_height = vertical_side.length() - sill_height - 0.05
+            message += 'to {n:.2f} because it would exceed the wall height '.format(n=window_height)
+            message += 'on surface: {sn}'.format(sn=building_surface.Name)
+            logger.debug(message)
 
         # calculate the area
         total_window_area = building_surface.area() * win_wall_ratio
 
         # get the size of the windows and distance between them
         window_total_width = total_window_area / window_height
+
         distance_between = (horizontal_side.length() - window_total_width) / (break_up_number + 1)
         if distance_between <= 0:
-            # TODO make note of change in the number and size
+            message = 'Number of windows changed from {n} '.format(n=break_up_number)
             break_up_number = 1
             distance_between = 0.05
+            message += 'to {n} they would not fit on the wall '.format(n=break_up_number)
+            message += 'on surface: {sn}'.format(sn=building_surface.Name)
+            logger.debug(message)
         window_width = window_total_width / break_up_number
+
+        if window_width >= horizontal_side.length():
+            max_size_reached = False
+            window_width = horizontal_side.length() - 0.05 - 0.05
+            # if only one window and it is wider than the surface -> make window higher
+            message = 'Height of windows was increased from {o:.2f} '.format(o=window_height)
+            window_height = total_window_area / window_width
+            message += 'to {n:.2f} '.format(n=window_height)
+
+            if sill_height + window_height >= vertical_side.length():
+                # if still too high, make the sill lower
+                message += 'and height of sill was decreased from {o:.2f} '.format(o=sill_height)
+                sill_height = vertical_side.length() - 0.05 - window_height
+                if sill_height < 0.05:
+                    sill_height = 0.05
+                    window_height = vertical_side.length() - 0.05 - 0.05
+                    max_size_reached = True
+                message += 'to {n:.2f} '.format(n=sill_height)
+            message += 'to satisfy window ratio '
+            if max_size_reached:
+                message = 'Maximum window size of {w} × {h} is reached '.format(w=window_width, h=window_height)
+            message += 'on surface: {sn}'.format(sn=building_surface.Name)
+            logger.debug(message)
 
         h_unit = horizontal_side.unitize()
         v_unit = vertical_side.unitize()

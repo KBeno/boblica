@@ -8,6 +8,7 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection, Line3DCollection
 import matplotlib.pyplot as plt
 from eppy.modeleditor import IDF
 
+from firepy.calculation.cost import CostCalculation
 from firepy.model.geometry import Point, Vector, Line, Ray, Plane, Rectangle, Box, Face
 from firepy.model.building import BuildingSurface, FenestrationSurface, NonZoneSurface, Zone, Building, Ref
 from firepy.model.building import ObjectLibrary, Construction
@@ -634,10 +635,40 @@ class SimpleViewer:
 
 class ResultViewer:
 
-    def __init__(self, calculation: LCACalculation):
+    def __init__(self, calculation: Union[LCACalculation, CostCalculation]):
         self.calculation = calculation
 
-    def sunburst(self, model: Building, indicator: str, cutoff: float = 0.01) -> go.Figure:
+    def sunburst(self, model: Union[Building, Construction], indicator: str = None,
+                 library: ObjectLibrary = None, cutoff: float = 0.01) -> go.Figure:
+        """
+        Create sunburst diagram for cost or impact of a Building or a Construction
+        :param model:
+        :param indicator: only needed for impact calculation
+        :param library: only needed for constructions
+        :param cutoff: the ratio of non-displayed values (default 0.01 -# impact less than 1% will not be displayed)
+        :return:
+        """
+        if isinstance(self.calculation, LCACalculation):
+            if indicator is None:
+                message = 'Please specify indicator for to create sunburst diagram for. '
+                message += 'Options: ' + ', '.join(self.calculation.impact_categories)
+                raise Exception('Please specify indicator for to create sunburst diagram for')
+            return self.__sunburst_lca(model=model, indicator=indicator, library=library, cutoff=cutoff)
+
+        elif isinstance(self.calculation, CostCalculation):
+            return self.__sunburst_cost(model=model, library=library, cutoff=cutoff)
+
+
+    def __sunburst_lca(self, model: Union[Building, Construction], indicator: str,
+                       library: ObjectLibrary = None, cutoff: float = 0.01) -> go.Figure:
+        """
+
+        :param model:
+        :param indicator:
+        :param library: if construction is calculated library is needed
+        :param cutoff:
+        :return:
+        """
         import locale
         locale.setlocale(locale.LC_ALL, '')
 
@@ -652,10 +683,19 @@ class ResultViewer:
         values = []
 
         # Create first level - total
-        building_impacts = self.calculation.calculate_impact(model).impacts.loc[indicator, :]
-        total_value = building_impacts.sum()
 
-        labels.append('{ind}<br>{val:n}<br>{un}'.format(ind=indicator, val=total_value, un=impact_unit))
+        total_impact_result = self.calculation.calculate_impact(model)
+        total_impacts = total_impact_result.impacts.loc[indicator, :]
+        total_value = total_impacts.sum()
+
+        if isinstance(model, Building):
+            labels.append('{ind}<br>{val:n}<br>{un}'.format(ind=indicator, val=total_value, un=impact_unit))
+        elif isinstance(model, Construction):
+            labels.append('{ind}<br>{val:n}<br>{un}/{ref}'.format(
+                ind=indicator, val=total_value, un=impact_unit, ref=total_impact_result.BasisUnit))
+        else:
+            raise Exception('Input model needs to be Building or Construction, not {t}'.format(t=type(model)))
+
         ids.append('Total')
         parents.append('')
         values.append(int(total_value / total_value * 1000))
@@ -676,72 +716,243 @@ class ResultViewer:
                         values.append(int(stage_value / total_value * 1000))
 
         # Create second level - main life cycle stages
-        add_by_stage(building_impacts, '', 'Total')
+        add_by_stage(total_impacts, '', 'Total')
 
-        # Third level - envelope / internal / HVAC
-        # Fourth level - fenestration / wall / slab // heating / cooling / lights
-        # Fifth level - Materials
-        envelope = ImpactResult(basis_unit='total')
-        internal = ImpactResult(basis_unit='total')
+        if isinstance(model, Construction):
+            if library is None:
+                raise Exception('Please provide the ObjectLibrary of the model')
+            life_times = self.calculation.evaluate_construction_lifetimes(model, library)
+            for mat in model.Layers:
+                material = library.get(mat)
+                mat_imp = self.calculation.calculate_impact(material, life_time_overwrites=life_times)
+                material_impact = mat_imp.impacts.loc[indicator, :]
+                add_by_stage(material_impact, material.Name, '')
 
-        fenestration = ImpactResult(basis_unit='total')
-        envelope_wall = ImpactResult(basis_unit='total')
-        envelope_slab = ImpactResult(basis_unit='total')
-        internal_wall = ImpactResult(basis_unit='total')
-        internal_slab = ImpactResult(basis_unit='total')
+        if isinstance(model, Building):
+            # Third level - envelope / internal / HVAC
+            # Fourth level - fenestration / wall / slab // heating / cooling / lights
+            # Fifth level - Materials
+            envelope = ImpactResult(basis_unit='total')
+            internal = ImpactResult(basis_unit='total')
 
-        for zone in model.Zones:
-            for surface in zone.BuildingSurfaces:
-                surf_impact: ImpactResult = self.calculation.calculate_impact(surface)
-                if surface.OutsideBoundaryCondition.lower() in ['outdoors', 'ground']:
-                    envelope += surf_impact
-                    if surface.SurfaceType.lower() == 'wall':
-                        windows_impact = ImpactResult(basis_unit='total')
-                        for window in surface.Fenestration:
-                            window_impact: ImpactResult = self.calculation.calculate_impact(window)
-                            windows_impact += window_impact
-                        fenestration += windows_impact
-                        envelope_wall += surf_impact - windows_impact
+            fenestration = ImpactResult(basis_unit='total')
+            envelope_wall = ImpactResult(basis_unit='total')
+            envelope_slab = ImpactResult(basis_unit='total')
+            internal_wall = ImpactResult(basis_unit='total')
+            internal_slab = ImpactResult(basis_unit='total')
+
+            for zone in model.Zones:
+                for surface in zone.BuildingSurfaces:
+                    surf_impact: ImpactResult = self.calculation.calculate_impact(surface)
+                    if surface.OutsideBoundaryCondition.lower() in ['outdoors', 'ground']:
+                        envelope += surf_impact
+                        if surface.SurfaceType.lower() == 'wall':
+                            windows_impact = ImpactResult(basis_unit='total')
+                            for window in surface.Fenestration:
+                                window_impact: ImpactResult = self.calculation.calculate_impact(window)
+                                windows_impact += window_impact
+                            fenestration += windows_impact
+                            envelope_wall += surf_impact - windows_impact
+                        else:
+                            envelope_slab += surf_impact
                     else:
-                        envelope_slab += surf_impact
-                else:
-                    internal += surf_impact
-                    if surface.SurfaceType.lower() == 'wall':
-                        internal_wall += surf_impact
+                        internal += surf_impact
+                        if surface.SurfaceType.lower() == 'wall':
+                            internal_wall += surf_impact
+                        else:
+                            internal_slab += surf_impact
+
+            # Ignore Non-zone Surfaces for now
+
+            if not envelope.impacts.empty:
+                envelope_impacts = envelope.impacts.loc[indicator, :]
+                add_by_stage(envelope_impacts, 'Envelope', '')
+            if not internal.impacts.empty:
+                internal_impacts = internal.impacts.loc[indicator, :]
+                add_by_stage(internal_impacts, 'Internal', '')
+
+            hvac_impacts = self.calculation.calculate_impact(model.HVAC).impacts.loc[indicator, :]
+            add_by_stage(hvac_impacts, 'HVAC', '')
+
+            if not fenestration.impacts.empty:
+                fenestration_impacts = fenestration.impacts.loc[indicator, :]
+                add_by_stage(fenestration_impacts, 'Fenestration', 'Envelope')
+            if not envelope_wall.impacts.empty:
+                envelope_wall_impacts = envelope_wall.impacts.loc[indicator, :]
+                add_by_stage(envelope_wall_impacts, 'Walls', 'Envelope')
+            if not envelope_slab.impacts.empty:
+                envelope_slab_impacts = envelope_slab.impacts.loc[indicator, :]
+                add_by_stage(envelope_slab_impacts, 'Slabs', 'Envelope')
+
+            if not internal_wall.impacts.empty:
+                internal_wall_impacts = internal_wall.impacts.loc[indicator, :]
+                add_by_stage(internal_wall_impacts, 'Walls', 'Internal')
+            if not internal_slab.impacts.empty:
+                internal_slab_impacts = internal_slab.impacts.loc[indicator, :]
+                add_by_stage(internal_slab_impacts, 'Slabs', 'Internal')
+
+            heating = self.calculation.calculate_impact(model.HVAC.Heating) * self.calculation.rsp
+            cooling = self.calculation.calculate_impact(model.HVAC.Cooling) * self.calculation.rsp
+            lights = self.calculation.calculate_impact(model.HVAC.Lighting) * self.calculation.rsp
+            heating_impacts = heating.impacts.loc[indicator, :]
+            cooling_impacts = cooling.impacts.loc[indicator, :]
+            lights_impacts = lights.impacts.loc[indicator, :]
+
+            add_by_stage(heating_impacts, 'Heating', 'HVAC')
+            add_by_stage(cooling_impacts, 'Cooling', 'HVAC')
+            add_by_stage(lights_impacts, 'Lights', 'HVAC')
+
+        trace = go.Sunburst(
+            labels=labels,
+            ids=ids,
+            parents=parents,
+            values=values,
+            branchvalues="total",
+            # with using this attribute it is possible to add very many leafs
+            # maxdepth=3
+        )
+
+        fig = go.Figure(
+            data=trace
+        )
+        fig.update_layout(
+            autosize=False,
+            width=800,
+            height=800,
+            template='plotly_white'
+        )
+        return fig
+
+    def __sunburst_cost(self, model: Union[Building, Construction],
+                       library: ObjectLibrary = None, cutoff: float = 0.01) -> go.Figure:
+        """
+
+        :param model:
+        :param indicator:
+        :param library: if construction is calculated library is needed
+        :param cutoff:
+        :return:
+        """
+        import locale
+        locale.setlocale(locale.LC_ALL, '')
+
+        from firepy.calculation.cost import CostResult
+
+        cost_unit = 'EUR'
+
+        labels = []
+        ids = []
+        parents = []
+        values = []
+
+        # Create first level - total
+
+        total_cost_result = self.calculation.calculate_cost(model)
+        total_costs = total_cost_result.costs  # pd.Series
+        total_value = total_costs.sum()
+
+        if isinstance(model, Building):
+            labels.append('{ind}<br>{val:n}<br>{un}'.format(ind='Cost', val=total_value, un=cost_unit))
+        elif isinstance(model, Construction):
+            labels.append('{ind}<br>{val:n}<br>{un}/{ref}'.format(
+                ind='Cost', val=total_value, un=cost_unit, ref=total_cost_result.ReferenceUnit))
+        else:
+            raise Exception('Input model needs to be Building or Construction, not {t}'.format(t=type(model)))
+
+        ids.append('Total')
+        parents.append('')
+        values.append(int(total_value / total_value * 1000))
+
+        def add_by_stage(costs: pd.Series, label: str, parent: str):
+            for stage in ['Production', 'Installation', 'Replacement', 'Operation']:
+                stage_value = costs[stage]
+                if stage_value / total_value > cutoff:
+                    if parent == 'Total':
+                        labels.append('{s}<br>{v:n}'.format(s=stage, v=stage_value))
+                        ids.append(stage)
+                        parents.append('Total')
+                        values.append(int(stage_value / total_value * 1000))
                     else:
-                        internal_slab += surf_impact
+                        labels.append('{s}<br>{v:n}'.format(s=label, v=stage_value))
+                        ids.append(stage + parent + label)
+                        parents.append(stage + parent)
+                        values.append(int(stage_value / total_value * 1000))
 
-        # Ignore Non-zone Surfaces for now
+        # Create second level - main life cycle stages
+        add_by_stage(total_costs, '', 'Total')
 
-        envelope_impacts = envelope.impacts.loc[indicator, :]
-        internal_impacts = internal.impacts.loc[indicator, :]
-        hvac_impacts = self.calculation.calculate_impact(model.HVAC).impacts.loc[indicator, :]
-        add_by_stage(envelope_impacts, 'Envelope', '')
-        add_by_stage(internal_impacts, 'Internal', '')
-        add_by_stage(hvac_impacts, 'HVAC', '')
+        if isinstance(model, Construction):
+            if library is None:
+                raise Exception('Please provide the ObjectLibrary of the model')
+            life_times = self.calculation.evaluate_construction_lifetimes(model, library)
+            for mat in model.Layers:
+                material = library.get(mat)
+                mat_cst = self.calculation.calculate_cost(material, life_time_overwrites=life_times)
+                add_by_stage(mat_cst.costs, material.Name, '')
 
-        fenestration_impacts = fenestration.impacts.loc[indicator, :]
-        envelope_wall_impacts = envelope_wall.impacts.loc[indicator, :]
-        envelope_slab_impacts = envelope_slab.impacts.loc[indicator, :]
-        add_by_stage(fenestration_impacts, 'Fenestration', 'Envelope')
-        add_by_stage(envelope_wall_impacts, 'Walls', 'Envelope')
-        add_by_stage(envelope_slab_impacts, 'Slabs', 'Envelope')
+        if isinstance(model, Building):
+            # Third level - envelope / internal / HVAC
+            # Fourth level - fenestration / wall / slab // heating / cooling / lights
+            # Fifth level - Materials
+            envelope = CostResult(ref_unit='total')
+            internal = CostResult(ref_unit='total')
 
-        internal_wall_impacts = internal_wall.impacts.loc[indicator, :]
-        internal_slab_impacts = internal_slab.impacts.loc[indicator, :]
-        add_by_stage(internal_wall_impacts, 'Walls', 'Internal')
-        add_by_stage(internal_slab_impacts, 'Slabs', 'Internal')
+            fenestration = CostResult(ref_unit='total')
+            envelope_wall = CostResult(ref_unit='total')
+            envelope_slab = CostResult(ref_unit='total')
+            internal_wall = CostResult(ref_unit='total')
+            internal_slab = CostResult(ref_unit='total')
 
-        heating = self.calculation.calculate_impact(model.HVAC.Heating) * self.calculation.rsp
-        cooling = self.calculation.calculate_impact(model.HVAC.Cooling) * self.calculation.rsp
-        lights = self.calculation.calculate_impact(model.HVAC.Lighting) * self.calculation.rsp
-        heating_impacts = heating.impacts.loc[indicator, :]
-        cooling_impacts = cooling.impacts.loc[indicator, :]
-        lights_impacts = lights.impacts.loc[indicator, :]
+            for zone in model.Zones:
+                for surface in zone.BuildingSurfaces:
+                    surf_cost: CostResult = self.calculation.calculate_cost(surface)
+                    if surface.OutsideBoundaryCondition.lower() in ['outdoors', 'ground']:
+                        envelope += surf_cost
+                        if surface.SurfaceType.lower() == 'wall':
+                            windows_cost = CostResult(ref_unit='total')
+                            for window in surface.Fenestration:
+                                window_cost: CostResult = self.calculation.calculate_cost(window)
+                                windows_cost += window_cost
+                            fenestration += windows_cost
+                            envelope_wall += surf_cost - windows_cost
+                        else:
+                            envelope_slab += surf_cost
+                    else:
+                        internal += surf_cost
+                        if surface.SurfaceType.lower() == 'wall':
+                            internal_wall += surf_cost
+                        else:
+                            internal_slab += surf_cost
 
-        add_by_stage(heating_impacts, 'Heating', 'HVAC')
-        add_by_stage(cooling_impacts, 'Cooling', 'HVAC')
-        add_by_stage(lights_impacts, 'Lights', 'HVAC')
+            # Ignore Non-zone Surfaces for now
+
+            if not envelope.costs.empty:
+                add_by_stage(envelope.costs, 'Envelope', '')
+            if not internal.costs.empty:
+                add_by_stage(internal.costs, 'Internal', '')
+
+            hvac_costs = self.calculation.calculate_cost(model.HVAC).costs
+            add_by_stage(hvac_costs, 'HVAC', '')
+
+            if not fenestration.costs.empty:
+                add_by_stage(fenestration.costs, 'Fenestration', 'Envelope')
+            if not envelope_wall.costs.empty:
+                add_by_stage(envelope_wall.costs, 'Walls', 'Envelope')
+            if not envelope_slab.costs.empty:
+                add_by_stage(envelope_slab.costs, 'Slabs', 'Envelope')
+
+            if not internal_wall.costs.empty:
+                add_by_stage(internal_wall.costs, 'Walls', 'Internal')
+            if not internal_slab.costs.empty:
+                add_by_stage(internal_slab.costs, 'Slabs', 'Internal')
+
+            heating = self.calculation.calculate_cost(model.HVAC.Heating) * self.calculation.rsp
+            cooling = self.calculation.calculate_cost(model.HVAC.Cooling) * self.calculation.rsp
+            lights = self.calculation.calculate_cost(model.HVAC.Lighting) * self.calculation.rsp
+
+            add_by_stage(heating.costs, 'Heating', 'HVAC')
+            add_by_stage(cooling.costs, 'Cooling', 'HVAC')
+            add_by_stage(lights.costs, 'Lights', 'HVAC')
 
         trace = go.Sunburst(
             labels=labels,

@@ -19,7 +19,7 @@ from firepy.model.building import Building
 
 logger = logging.getLogger(__name__)
 
-
+# REPLACED
 class Parameter:
 
     def __init__(self, name: str, typ: str, value: Union[str, float, int] = None, limits: tuple = (None, None)):

@@ -30,6 +30,21 @@ class CostResult:
     def costs(self, new: pd.Series):
         self._costs = new
 
+    def __add__(self, other: 'CostResult') -> 'CostResult':
+        if self.ReferenceUnit != other.ReferenceUnit:
+            raise UnitOfMeasurementError('Units of CostResults are not compatible: {} + {}'.format(
+                self.ReferenceUnit, other.ReferenceUnit
+            ))
+        self.costs = self.costs.add(other.costs, fill_value=0)
+        return self
+
+    def __sub__(self, other: 'CostResult') -> 'CostResult':
+        return self + (other * -1)
+
+    def __mul__(self, other: Union[int, float]) -> 'CostResult':
+        self.costs = self.costs.mul(other)
+        # TODO update BasisUnit of result
+        return self
 
 class CostCalculation:
 
@@ -815,15 +830,16 @@ class CostCalculation:
         # Initiate cost result
         cost_result = CostResult(ref_unit='total')
 
-        # Get shading of the window
-        shading = library.get(fenestration_surface.Shading)
+        if fenestration_surface.Shading is not None:
+            # Get shading of the window
+            shading = library.get(fenestration_surface.Shading)
 
-        shading_cost = self.calculate_cost(shading, library)
+            shading_cost = self.calculate_cost(shading, library)
 
-        # Add cost of shading to the total
-        shading_total_cost = shading_cost.costs.mul(fenestration_surface.area())
+            # Add cost of shading to the total
+            shading_total_cost = shading_cost.costs.mul(fenestration_surface.area())
 
-        cost_result.costs = cost_result.costs.add(shading_total_cost, fill_value=0)
+            cost_result.costs = cost_result.costs.add(shading_total_cost, fill_value=0)
 
         # Get construction of the surface
         construction = library.get(fenestration_surface.Construction)

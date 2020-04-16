@@ -2,6 +2,9 @@ import logging
 import os
 import configparser
 import json
+import sys
+import time
+import traceback
 import uuid
 from importlib import reload
 from pathlib import Path
@@ -22,7 +25,7 @@ from firepy.model.building import Building
 from firepy.calculation.lca import ImpactResult, LCACalculation
 from firepy.calculation.cost import CostResult, CostCalculation
 
-app = Flask(__name__)
+app = Flask('firepy')
 
 if __name__ != '__main__':
     gunicorn_logger = logging.getLogger('gunicorn.error')
@@ -147,11 +150,8 @@ def setup():
     # Energy calculation option
     if content_type == 'weather_data':
         app.logger.info('Setting up Weather Data for: {n}'.format(n=setup_name))
-        content = request.args.get_data(as_text=True)  # pd.DataFrame in JSON format with orient='split'
+        content = request.get_data()  # serialized pd.DataFrame
         R.set('{name}:weather_data'.format(name=setup_name), content)
-        # setup data in energy calculation
-        weather_data = pd.read_json(content, orient='split')
-        ENERGY_STEADY_STATE.weather_data = weather_data
 
     if msg:
         return 'OK - {m}'.format(m=msg)
@@ -185,16 +185,25 @@ def calculate():
         model, idf = update_model(name=name, parameters=parameters)
 
         # ----------------------- CALCULATIONS --------------------------------
-        impact_result, cost_result, sim_id = run(name=name, model=model, idf=idf)
+        tic = time.perf_counter()
+        impact_result, cost_result, energy_result, sim_id = run(name=name, model=model, idf=idf)
+        toc = time.perf_counter()
+
+        # measure execution time
+        exec_time = toc - tic
 
         # ----------------------- EVALUATION --------------------------------
-        result = evaluate(impacts=impact_result.impacts, costs=cost_result.costs)
+        result = evaluate(impacts=impact_result.impacts, costs=cost_result.costs, energy=energy_result)
 
-    except Exception as e:
+    except Exception as err:
         # if anything goes wrong return an invalid result value (e.g. infinity)
-        app.logger.info('Calculation failed with error: {e}'.format(e=e))
+        app.logger.info('Calculation failed with error: {e}: {r}'.format(e=sys.exc_info()[0], r=err))
+        app.logger.debug('Traceback:')
+        if gunicorn_logger.level < 15:
+            traceback.print_tb(sys.exc_info()[2])
         result = evaluate()
         sim_id = 'failed'
+        exec_time = float('inf')
 
     # -------------------- WRITE RESULTS TO DATABASE --------------------
     app.logger.info('Saving results to database for: {id}'.format(id=sim_id))
@@ -206,6 +215,7 @@ def calculate():
     result_series = pd.Series(data=data, name=sim_id)
     result_series = result_series.append(result)
     result_series['calculation_id'] = sim_id
+    result_series['calculation_time'] = exec_time
     result_frame = result_series.to_frame().transpose()
 
     result_frame.to_sql(name=name, con=RESULT_DB, if_exists='append', index=False)
@@ -244,7 +254,7 @@ def results():
     if name is None:
         return "Please provide 'name' argument to specify which results to return"
 
-    query = 'SELECT * FROM {tbl}'.format(
+    query = 'SELECT * FROM "{tbl}"'.format(
         tbl=name,
     )
 
@@ -283,17 +293,23 @@ def instate():
     model, idf = update_model(name=name, parameters=parameters)
 
     # ----------------------- CALCULATIONS --------------------------------
-    impact_result, cost_result, sim_id = run(name=name, model=model, idf=idf, simulation_options=options)
+    tic = time.perf_counter()
+    impact_result, cost_result, energy_result, sim_id = run(name=name, model=model, idf=idf, simulation_options=options)
+    toc = time.perf_counter()
+
+    # measure execution time
+    exec_time = toc - tic
 
     # ----------------------- EVALUATION --------------------------------
     reload(firepy.setup.functions)
     from firepy.setup.functions import evaluate
 
-    result = evaluate(impacts=impact_result.impacts, costs=cost_result.costs)
+    result = evaluate(impacts=impact_result.impacts, costs=cost_result.costs, energy=energy_result)
 
     data = {
         'result': result.to_dict(),
-        'simulation_id': sim_id
+        'simulation_id': sim_id,
+        'calculation_time': exec_time
     }
     return jsonify(data)
 
@@ -324,13 +340,13 @@ def reinstate():
     model, idf = update_model(name=name, parameters=parameters)
 
     # ----------------------- CALCULATIONS --------------------------------
-    impact_result, cost_result, sim_id = run(name=name, model=model, simulation_id=calc_id)
+    impact_result, cost_result, energy_result, sim_id = run(name=name, model=model, simulation_id=calc_id)
 
     # ----------------------- EVALUATION --------------------------------
     reload(firepy.setup.functions)
     from firepy.setup.functions import evaluate
 
-    result = evaluate(impacts=impact_result.impacts, costs=cost_result.costs)
+    result = evaluate(impacts=impact_result.impacts, costs=cost_result.costs, energy=energy_result)
 
     return jsonify(result.to_dict())
 
@@ -370,6 +386,24 @@ def get_parameters():
     params: MutableMapping[str, Parameter] = dill.loads(R.get('{name}:parameters'.format(name=name)))
     param_dict = {name: par.value for name, par in params.items()}
     return jsonify(param_dict)
+
+
+@app.route("/parameters/full", methods=['GET'])
+def get_parameters_full():
+    """
+    Return the actual parameters from the server
+    :return: Serialized List of Parameters
+    """
+    # get the name of the calculation setup
+    name = request.args.get('name')
+    if name is None:
+        return "Please provide 'name' argument to specify which model to return the parameters of"
+
+    if not R.exists('{name}:parameters'.format(name=name)):
+        return "No parameters found for name: {s}".format(s=name)
+
+    param_dump = R.get('{name}:parameters'.format(name=name))
+    return param_dump
 
 
 @app.route("/lca", methods=['GET'])
@@ -419,20 +453,37 @@ def get_energy_results():
     if name is None:
         return "Please provide 'name' argument to specify which model to return the calculation of"
 
-    simulation_id = request.args.get('id')
-    if simulation_id is None:
-        return "Please provide 'id' argument to specify which model to return the energy results of"
+    energy_calculation = R.get('{name}:energy_calculation'.format(name=name)).decode()
 
-    variables = request.args.getlist('variables')
-    typ = request.args.get('type')
-    period = request.args.get('period')
+    if energy_calculation == 'simulation':
 
-    app.logger.info('Getting results for simulation with id: {sid}'.format(sid=simulation_id))
+        simulation_id = request.args.get('id')
+        if simulation_id is None:
+            return "Please provide 'id' argument to specify which model to return the energy results of"
 
-    energy_calc_results = ENERGY_CALCULATION.results(variables=variables,
-                                                     name=name,
-                                                     sim_id=simulation_id,
-                                                     typ=typ, period=period)
+        variables = request.args.getlist('variables')
+        typ = request.args.get('type')
+        period = request.args.get('period')
+
+        app.logger.info('Getting results for simulation with id: {sid}'.format(sid=simulation_id))
+
+        energy_calc_results = ENERGY_CALCULATION.results(variables=variables,
+                                                         name=name,
+                                                         sim_id=simulation_id,
+                                                         typ=typ, period=period)
+
+    elif energy_calculation == 'steady_state':
+        model: Building = dill.loads(R.get('{name}:model'.format(name=name)))
+        if ENERGY_STEADY_STATE.weather_data is None:
+            # setup data in energy calculation
+            app.logger.debug('Setting up weather data in steady state calculation.')
+            wd_dump = R.get('{name}:weather_data'.format(name=name))
+            weather_data = dill.loads(wd_dump)
+            ENERGY_STEADY_STATE.weather_data = weather_data
+        energy_calc_results = ENERGY_STEADY_STATE.calculate(model)
+
+    else:
+        raise Exception('Energy calculation option "{ec}" not implemented.'.format(ec=energy_calculation))
 
     return jsonify(energy_calc_results.to_json(orient='split'))
 
@@ -479,7 +530,7 @@ def cleanup():
         if not RESULT_DB.has_table(name):
             return 'No result found for name: {n}'.format(n=name)
 
-        query = 'DROP TABLE {n}'.format(n=name)
+        query = 'DROP TABLE "{n}"'.format(n=name)
         RESULT_DB.execute(query)
 
         app.logger.info('Result table {n} has been cleared'.format(n=name))
@@ -509,7 +560,7 @@ def update_params(name: str,
     msg = None
 
     if calculation_id is not None:
-        query = 'SELECT * FROM {tbl}'.format(
+        query = 'SELECT * FROM "{tbl}"'.format(
             tbl=name
         )
         result = pd.read_sql_query(query, RESULT_DB, index_col='calculation_id')
@@ -550,9 +601,16 @@ def update_params(name: str,
 
         if param.limits != (None, None):
             minimum, maximum = param.limits
-            if not minimum < value < maximum:
+            if not minimum <= value <= maximum:
                 msg = 'Parameter value {v} of {p} exceeds its limits: {lim}'.format(
                     v=value, p=param.name, lim=param.limits
+                )
+                return parameters, msg
+
+        if param.type == 'str' and param.options is not None:
+            if value not in param.options:
+                msg = 'Parameter value {v} of {p} is invalid, options are: {o}'.format(
+                    v=value, p=param.name, o=param.options
                 )
                 return parameters, msg
 
@@ -571,7 +629,7 @@ def update_model(name: str, parameters: MutableMapping[str, Parameter]) -> Tuple
     model: Building = dill.loads(R.get('{name}:model'.format(name=name)))
 
     reload(firepy.setup.functions)
-    from firepy.setup.functions import update_model, update_model, idf_update_options
+    from firepy.setup.functions import update_model, idf_update_options
 
     model = update_model(parameters=parameters, model=model)
 
@@ -592,19 +650,18 @@ def run(name: str,
         model: Building,
         idf: IDF = None,
         simulation_id: str = None,
-        simulation_options: Mapping = None) -> Tuple[ImpactResult, CostResult, str]:
+        simulation_options: MutableMapping = None) -> Tuple[ImpactResult, CostResult, pd.DataFrame, str]:
     """
     Run calculations with the model. Either idf or simulation_id is needed. If simulation_id is given, no
     simulation will run, existing results will be read
     :param name: name of the calculation setup
     :param model: Building model tu run calculation on
-    :param energy_calculation: 'simulation' (default) or 'steady_state' type of energy calculation
     :param idf: IDF representing the same model to use in simulation
     :param simulation_id: if simulation has been made before, the id of the simulation
     :param simulation_options: optional dictionary to pass to customize the simulation
     :return: impact result and cost result
     """
-    energy_calculation = R.get('{name}:energy_calculation'.format(name=name))
+    energy_calculation = R.get('{name}:energy_calculation'.format(name=name)).decode()
 
     # energy calculation
     if energy_calculation == 'simulation':
@@ -613,6 +670,31 @@ def run(name: str,
             from firepy.setup.functions import energy_calculation_options
         else:
             energy_calculation_options = simulation_options
+
+        # Add defaults to the specification
+        if 'outputs' not in energy_calculation_options:
+            energy_calculation_options['outputs'] = {
+                'zone': ['heating', 'cooling', 'lights'],
+                'surface': []
+            }
+        else:
+            if 'zone' not in energy_calculation_options['outputs']:
+                energy_calculation_options['outputs']['zone'] = ['heating', 'cooling', 'lights']
+            else:
+                if 'heating' not in energy_calculation_options['outputs']['zone']:
+                    energy_calculation_options['outputs']['zone'].append('heating')
+                if 'cooling' not in energy_calculation_options['outputs']['zone']:
+                    energy_calculation_options['outputs']['zone'].append('cooling')
+                if 'lights' not in energy_calculation_options['outputs']['zone']:
+                    energy_calculation_options['outputs']['zone'].append('lights')
+            if 'surface' not in energy_calculation_options['outputs']:
+                energy_calculation_options['outputs']['surface'] = []
+
+        if 'output_resolution' not in energy_calculation_options:
+            energy_calculation_options['output_resolution'] = 'runperiod'
+
+        if 'clear_existing_variables' not in energy_calculation_options:
+            energy_calculation_options['clear_existing_variables'] = False
 
         if simulation_id is None:
             app.logger.info('Running simulation')
@@ -627,12 +709,14 @@ def run(name: str,
                 ENERGY_CALCULATION.clear_outputs()
 
             zone_outputs: List = energy_calculation_options['outputs']['zone']
+            app.logger.debug('Setting zone outputs: {}'.format(zone_outputs))
             if zone_outputs:  # not an empty list
                 ENERGY_CALCULATION.set_outputs(*zone_outputs, typ='zone')
-            else:
+            else:  # this would never happen since we set the defaults above
                 ENERGY_CALCULATION.set_outputs('heating', 'cooling', 'lights', typ='zone')
 
             surface_outputs: List = energy_calculation_options['outputs']['surface']
+            app.logger.debug('Setting surface outputs: {}'.format(surface_outputs))
             if surface_outputs:  # not an empty list
                 ENERGY_CALCULATION.set_outputs(*surface_outputs, typ='surface')
 
@@ -651,6 +735,12 @@ def run(name: str,
     elif energy_calculation == 'steady_state':
         calculation_id = str(uuid.uuid1())
         app.logger.info('Running steady state energy calculation with id: {id}'.format(id=calculation_id))
+        if ENERGY_STEADY_STATE.weather_data is None:
+            # setup data in energy calculation
+            app.logger.debug('Setting up weather data in steady state calculation.')
+            wd_dump = R.get('{name}:weather_data'.format(name=name))
+            weather_data = dill.loads(wd_dump)
+            ENERGY_STEADY_STATE.weather_data = weather_data
         energy_calc_results = ENERGY_STEADY_STATE.calculate(model)
 
     else:
@@ -674,7 +764,7 @@ def run(name: str,
     cost_result = cost_calculation.calculate_cost(model, demands=energy_calc_results)
     R.set('{name}:cost_calculation'.format(name=name), dill.dumps(cost_calculation))
 
-    return lca_result, cost_result, calculation_id
+    return lca_result, cost_result, energy_calc_results, calculation_id
 
 
 # use only for development:

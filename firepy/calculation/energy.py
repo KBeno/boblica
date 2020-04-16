@@ -468,6 +468,8 @@ class SteadyStateCalculation:
             if isinstance(data, str):
                 data = Path(data)
             self._weather_data = pd.read_csv(str(data), header=[0,1], index_col=[0,1])
+        elif data is None:
+            self._weather_data = None
         else:
             raise Exception('Only Path, str or pandas DataFrame can be parsed to weather data')
 
@@ -830,7 +832,7 @@ class SteadyStateCalculation:
         else:  # Cooling
             # set night ventilation for cooling season months
             h_nat_vent_summer = pd.Series(data=h_nat_vent_summer, index=[str(i) for i in range(1, 13)])
-            h_nat_vent_summer.loc[theta_e_monthly < 20] = 0  # Cooling season only
+            h_nat_vent_summer.loc[[1, 2, 3, 4, 10, 11, 12]] = 0  # Cooling season only: May-Sept
             h_vent = h_nat_vent + h_nat_vent_summer
 
         return h_vent  # [W/K]
@@ -877,11 +879,14 @@ class SteadyStateCalculation:
                 a_w = window.glazing_area(mode='FrameWidth', frame_width=0.1)  # TODO include frame width in model
 
                 # g value of shading
-                shading = library.get(window.Shading)
-                g_sh = shading.ShadingFactor
-                if not shading.IsScheduled:
-                    g_sh = 1
-                if heating:
+                if window.Shading is not None:
+                    shading = library.get(window.Shading)
+                    g_sh = shading.ShadingFactor
+                    if not shading.IsScheduled:
+                        g_sh = 1
+                    if heating:
+                        g_sh = 1
+                else:
                     g_sh = 1
 
                 # TODO f_s shading factor of external shading surfaces
