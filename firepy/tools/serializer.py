@@ -27,7 +27,7 @@ class JsonSerializer:
         # let's create the structure recursively, because we love short code
         for attr_name, attr_value in obj.__dict__.items():
             # we can serialize these as they are
-            if isinstance(attr_value, (int, float, str)):
+            if isinstance(attr_value, (int, float, str)) or attr_value is None:
                 obj_dict[attr_name] = attr_value
 
             # we need to serialize element-wise in a list
@@ -1001,7 +1001,7 @@ class IdfSerializer:
 
         ep_shading = self.idf.getobject('WindowProperty:ShadingControl', ep_fenestration_surface.Shading_Control_Name)
         if ep_shading is not None:
-            shading = self.fp_shading(ep_shading)
+            shading = self.fp_shading(ep_shading).get_ref()
         else:
             shading = None
 
@@ -1017,7 +1017,7 @@ class IdfSerializer:
             name=ep_fenestration_surface.Name,
             vertices=vertices,
             surface_type=ep_fenestration_surface.Surface_Type,
-            shading=shading.get_ref(),
+            shading=shading,
             construction=construction.get_ref(),
             shading_control_name=ep_fenestration_surface.Shading_Control_Name,
             frame_name=frame_name,

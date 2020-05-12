@@ -1,14 +1,20 @@
 from typing import Union, List, Tuple
 import os
+import logging
 
+import math
 import pandas as pd
 import numpy as np
+
+
+logger = logging.getLogger(__name__)
 
 
 class Parameter:
 
     def __init__(self, name: str, typ: str, value: Union[str, float, int] = None,
-                 limits: Tuple[float, float] = (None, None), step: float = None, options: List[str] = None):
+                 limits: Tuple[float, float] = (None, None), step: float = None, options: List[str] = None,
+                 precision: int = 4):
         """
 
         :param name:
@@ -16,12 +22,14 @@ class Parameter:
         :param value:
         :param limits:
         :param options:
+        :param precision: for float parameters set the number of decimals
         """
         self.name = name
         self.value = value
         self.type = typ
         self.limits = limits
         self.step = step
+        self.precision = precision
         if options is not None:
             self.options = options
         elif step is not None:
@@ -40,6 +48,47 @@ class Parameter:
             else:
                 return np.random.choice(self.options)
 
+    def encode(self, value):
+        """
+        Encodes the given value to a positive integer
+        :param value:
+        :return:
+        """
+        if self.type == 'str':
+            return self.options.index(value)
+        elif self.type == 'float':
+            lower, upper = self.limits
+            if value < lower:
+                logger.info('Value {v} is out of bounds ({l} - {u}) in parameter {p}'.format(
+                    v=value, l=lower, u=upper, p=self.name
+                ))
+                return 0
+            elif value > upper:
+                logger.info('Value {v} is out of bounds ({l} - {u}) in parameter {p}'.format(
+                    v=value, l=lower, u=upper, p=self.name
+                ))
+                return len(self.options)
+            return int((value - lower) // self.step)
+
+    def decode(self, value: float):
+        if value == len(self.options):
+            value -= 1
+        else:
+            value = math.floor(value)
+        if self.type == 'str':
+            return self.options[value]
+        elif self.type == 'float':
+            lower, upper = self.limits
+            return lower + value * self.step
+
+    def limits_encoded(self):
+        return 0, len(self.options)
+
+    def normalize(self, encoded_value: int, bounds: Tuple[float, float] = (0, 1)):
+        min, max = bounds
+        low, high = self.limits_encoded()
+        return (encoded_value - low) / (high - 1 - low) * (max - min) + min
+
 
 class MonteCarloSimulation:
 
@@ -50,6 +99,8 @@ class MonteCarloSimulation:
     @property
     def parameters(self) -> List[Parameter]:
         return self._parameters
+
+    # TODO parameter elolszlas tipus megadasa parameterenkent( egyenletes, normal, stb)
 
     @parameters.setter
     def parameters(self, param_list: List[Parameter]):
@@ -62,15 +113,25 @@ class MonteCarloSimulation:
     def next(self, seed: int = None):
         if seed is None:
             # seed the generator from the computer to enable parallel runs
-            np.random.seed(int.from_bytes(os.urandom(4), byteorder='little'))
-        else:
-            # use the provided seed to enable reproducibility
-            np.random.seed(seed)
+            seed = int.from_bytes(os.urandom(4), byteorder='little')
+            # else use the provided seed to enable reproducibility
+        np.random.seed(seed)
         params = {p.name: p.random() for p in self.parameters}
         self.client.calculate(name=self.name, parameters=params)
+        return seed
 
 
-def pareto_non_dominated(df: pd.DataFrame, objectives: list) -> pd.DataFrame:
+def pareto_dominance(df: pd.DataFrame, objectives: list, non_dom: bool = True,
+                     dom: bool = False) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
+    """
+    Select pareto non-dominated / dominated solutions from a list of solutions
+
+    :param df: the input DataFrame
+    :param objectives: columns names of the objectives to evaluate pareto dominance
+    :param non_dom: if True (default) return non-dominated solutions
+    :param dom: if True return dominated solutions default is False
+    :return: DataFrame of the selected results or both results as (non-dominated, dominated)
+    """
     # drop NA values
     df = df.dropna(axis='index', subset=objectives)
 
@@ -118,5 +179,34 @@ def pareto_non_dominated(df: pd.DataFrame, objectives: list) -> pd.DataFrame:
             # we are ready
             break
 
-    return df.loc[non_dominated, :]
+    if non_dom and not dom:
+        return df.loc[non_dominated, :]
+    elif dom and not non_dom:
+        return df.loc[dominated, :]
+    else:
+        return df.loc[non_dominated, :], df.loc[dominated, :]
 
+
+def pareto_rank(df: pd.DataFrame, objectives: list, max_rank: int = 10) -> pd.DataFrame:
+    """
+    Rank solutions based on pareto dominance
+
+    :param df:
+    :param objectives:
+    :return: DataFrame with additional column 'pareto_rank'
+    """
+    df['pareto_rank'] = np.nan
+    rank = 0
+    evaluating = df[objectives]
+
+    while len(evaluating) > 0:
+
+        non_dominated, dominated = pareto_dominance(evaluating, objectives=objectives, non_dom=True, dom=True)
+        df.loc[non_dominated.index, 'pareto_rank'] = rank
+        if rank >= max_rank:
+            break
+        rank += 1
+        evaluating = dominated
+        logger.debug('Rank {r}: {n} - remaining: {d}'.format(r=rank, n=len(non_dominated), d=len(dominated)))
+
+    return df

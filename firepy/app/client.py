@@ -22,6 +22,8 @@ class RemoteClient:
     def __init__(self, host: str, port: int):
         self.host = host
         self.port = port
+        if not host.startswith('http'):
+            self.host = 'http://' + self.host
         self.url = '{host}:{port}'.format(host=self.host, port=self.port)
 
     def setup(self,
@@ -172,13 +174,18 @@ class RemoteClient:
         except ValueError:
             return response.text
 
-    def status(self):
+    def status(self, name: str = None):
         """
-        Get status of server (setups and result tables)
-        :return:
+        Get status of server. If setup name is None, return the name of setups and result tables as well as
+        the number of running calculations. If name is not None, return the number of calculations and the
+        timestamp of the last calculation
+        :return: status dict
         """
         url = self.url + '/status'
-        response = requests.get(url=url)
+        if name is None:
+            response = requests.get(url=url)
+        else:
+            response = requests.get(url=url, params={'name': name})
         try:
             return response.json()
         except ValueError:
@@ -192,6 +199,18 @@ class RemoteClient:
             return df
         except JSONDecodeError:
             return response.text
+
+    def upload_results(self, name: str, results: pd.DataFrame) -> str:
+        """
+        Upload initiate existing result table in the database.
+        :param name: Name of the calculation
+        :param results: Results obtained previously from the database or other sources
+        :return: message
+        """
+        url = self.url + '/results/upload'
+        content = results.to_json(orient='split')
+        response = requests.post(url=url, params={'name': name}, json=content)
+        return response.text
 
     def cleanup(self, name: str, target: str = None) -> str:
         """
@@ -208,6 +227,8 @@ class RemoteClient:
             logger.warning('Result database will be cleared for setup: {n}'.format(n=name))
         if target == 'simulations' or target is None:
             logger.warning('Simulation results will be deleted for setup: {n}'.format(n=name))
+        if target == 'setups' or target is None:
+            logger.warning('Setup items will be deleted for setup: {n}'.format(n=name))
 
         if input('Are you sure? (y/n): ') == 'y':
             response = requests.get(url=url, params={'name': name, 'target': target})

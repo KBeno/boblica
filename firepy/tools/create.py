@@ -1,12 +1,13 @@
-from typing import List, Union, Mapping
+from typing import List, Union, Mapping, Tuple
 import logging
 
+import math
 import pandas as pd
 
 from firepy.model.building import OpaqueMaterial, WindowMaterial, ShadeMaterial, BlindMaterial, Shading, Construction
 from firepy.model.building import BuildingSurface, FenestrationSurface, Zone, NonZoneSurface, Building
 from firepy.model.building import Ref, ObjectLibrary
-from firepy.model.geometry import Rectangle, Vector, Point, Box, move
+from firepy.model.geometry import Rectangle, Vector, Point, Box, move, Plane, Line
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +184,11 @@ class FenestrationCreator:
         )
 
     @staticmethod
+    def by_area():
+        # TODO
+        pass
+
+    @staticmethod
     def by_ratio(building_surface: BuildingSurface, construction: Ref, win_wall_ratio: float,
                  sill_height: float, window_height: float, break_up_number: int = 1,
                  name: str = None, shading: Ref = None, frame_name: str = None) -> List[FenestrationSurface]:
@@ -235,6 +241,14 @@ class FenestrationCreator:
             logger.debug(message)
         window_width = window_total_width / break_up_number
 
+        if window_width < 0.1:
+            window_width = window_total_width
+            break_up_number = 1
+            distance_between = (horizontal_side.length() - window_total_width) / 2
+            message = 'Break up number changed to 1, because windows would be less than 10 cm wide'
+            message += 'on surface: {sn}'.format(sn=building_surface.Name)
+            logger.debug(message)
+
         if window_width >= horizontal_side.length():
             max_size_reached = False
             window_width = horizontal_side.length() - 0.05 - 0.05
@@ -279,8 +293,11 @@ class FenestrationCreator:
         fenestration = []
 
         for i, p in enumerate(window_edge_points):
+            window_name = building_surface.Name + 'NoNameWindow' if name is None else name
+            if len(window_edge_points) > 1:
+                window_name += str(i)
             fenestration.append(FenestrationSurface(
-                name=building_surface.Name + 'NoNameWindow' + str(i) if name is None else name + str(i),
+                name=window_name,
                 vertices=make_window_geometry_points(p, window_width, window_height),
                 surface_type='window',
                 shading=shading,
@@ -304,7 +321,8 @@ class FenestrationCreator:
                                         window_height: Union[Mapping[str, float], float] = 1.5,
                                         break_up_number: Union[Mapping[str, int], int] = 1,
                                         shading: Union[Mapping[str, Union[Ref, None]], Ref, None] = None,
-                                        name: str = None
+                                        name: str = None,
+                                        # TODO remove_existing: bool = True
                                         ) -> Zone:
         # TODO use TypedDict later here (Python 3.8)
         """
@@ -317,7 +335,7 @@ class FenestrationCreator:
         :param construction: a dictionary with keys: 'north', 'south', 'east', 'west' to specify the construction, or
         a Construction to use for all directions
         :param sill_height: a dictionary with keys: 'north', 'south', 'east', 'west' to specify each sill height, or
-        a float to use for all directions
+    a float to use for all directions
         :param window_height: a dictionary with keys: 'north', 'south', 'east', 'west' to specify each window height, or
         a float to use for all directions
         :param break_up_number: a dictionary with keys: 'north', 'south', 'east', 'west' to specify number of windows
@@ -325,6 +343,7 @@ class FenestrationCreator:
         :param shading: a dictionary with keys: 'north', 'south', 'east', 'west' to specify the shading, or a Shading
         to use for all directions or None
         :param name: optional name to describe the windows
+        :param remove_existing: remove existing windows from surfaces
         :return: Zone with fenestration
         """
 
@@ -497,7 +516,172 @@ class ZoneCreator:
                         other_surface = other_zone.BuildingSurfaces[other_index]
                         surface.OutsideBoundaryCondition = other_surface.IuId
                         other_surface.OutsideBoundaryCondition = surface.IuId
+        for zone in zones:
+            for surface in zone.BuildingSurfaces:
+                if surface.SurfaceType.lower() == 'ceiling' and surface.OutsideBoundaryCondition == 'outdoors':
+                    surface.SurfaceType = 'Roof'
+                if surface.SurfaceType.lower() == 'floor' and surface.OutsideBoundaryCondition == 'outdoors':
+                    surface.SurfaceType = 'SlabOnGrade'
+                    surface.OutsideBoundaryCondition = 'ground'
+
         return zones
+
+    @staticmethod
+    def evaluate_surface_types(zone: Zone, max_roof_angle: float = 60, max_floor_angle: float = 5) -> Zone:
+
+        zone = ZoneCreator.evaluate_surface_direction(zone)
+        for surface in zone.BuildingSurfaces:
+
+            angle = surface.normal_vector().angle(Vector(0, 0, 1))
+            if angle < max_roof_angle:
+                if surface.OutsideBoundaryCondition.lower() == 'outdoors':
+                    surface.SurfaceType = 'Roof'
+                else:
+                    surface.SurfaceType = 'Ceiling'
+            elif angle > 180 - max_floor_angle:
+                surface.SurfaceType = 'Floor'
+            else:
+                surface.SurfaceType = 'Wall'
+
+        return zone
+
+    @staticmethod
+    def add_roof(zone: Zone, slope: float,
+                 roof_construction: Construction,
+                 wall_construction: Construction,
+                 floor_construction: Construction,
+                 name: str = None,
+                 ) -> Tuple[Zone, Zone]:
+        # TODO kontyolt
+        """
+        Create a pitched roof over a zone as an attic zone. Works properly only for rectangular zones with flat top.
+        :param zone: The Zone to create the roof over
+        :param slope: the slope of the roof in degrees relative to horizontal 0 < slope < 90
+        :param roof_construction:
+        :param wall_construction:
+        :param floor_construction:
+        :return: original Zone and generated attic as a tuple (Zone, Attic)
+        """
+        # Find the top of the zone (base of the roof)
+        if slope >= 90 or slope <= 0:
+            raise Exception('Invalid slope angle, please specify in degrees: 0 < slope < 90')
+
+        base = None
+        for surface in zone.BuildingSurfaces:
+            if surface.SurfaceType.lower() in ['roof', 'ceiling']:
+                base = surface
+                break
+        if base is None:
+            raise Exception('Could not find any surface in the zone with surface type "Roof" or "Ceiling" for base')
+
+        def roof_plane_for_edge(edge: Line, angle: float):
+            # unit normal vector of the vertical plane containing the first edge
+            normal = edge.to_vector().cross_product(Vector(0, 0, 1)).unitize()
+
+            # rotate normal to get the normal of the roof surface (elevate the z coordinate
+            normal.z += 1 * math.tan(math.radians(90 - angle))
+
+            # create plane of the roof
+            return Plane(normal=normal, point=edge.start)
+
+        # create roof planes:
+        edges = base.to_lines()
+
+        # start with the longer edge to associate roof plane with
+        if edges[0].length() < edges[-1].length():
+            edges = edges[-1:] + edges[:-1]
+
+        plane_a = roof_plane_for_edge(edges[0], angle=slope)
+        plane_b = roof_plane_for_edge(edges[2], angle=slope)
+
+        # create the plane of the triangular end walls
+        plane_x = roof_plane_for_edge(edges[-1], angle=90)
+        plane_y = roof_plane_for_edge(edges[1], angle=90)
+
+        # get the ridge
+        ridge = plane_a.intersect(plane_b)
+
+        if ridge is None:
+            # the two planes are parallel, reverse one of edges
+            plane_a = roof_plane_for_edge(edges[0].flip(), angle=slope)
+            ridge = plane_a.intersect(plane_b)
+
+        # intersect the ridge with the other surfaces
+        ridge_start = plane_x.intersect(ridge)
+        ridge_end = plane_y.intersect(ridge)
+
+
+        if ridge_start.z < base.vertices[0].z:
+            # ridge is below the base, flip both edges
+            plane_a = roof_plane_for_edge(edges[0].flip(), angle=slope)
+            plane_b = roof_plane_for_edge(edges[2].flip(), angle=slope)
+            ridge = plane_a.intersect(plane_b)
+            ridge_start = plane_x.intersect(ridge)
+            ridge_end = plane_y.intersect(ridge)
+
+        # Create surfaces
+        surface_a = BuildingSurface(
+            name='PitchedRoof_A',
+            vertices=edges[0].to_points() + [ridge_end, ridge_start],
+            surface_type='Roof',
+            construction=roof_construction.get_ref(),
+            fenestration=[],
+            outside_boundary_condition='outdoors'
+        )
+        surface_b = BuildingSurface(
+            name='PitchedRoof_B',
+            vertices=edges[2].to_points() + [ridge_start, ridge_end],
+            surface_type='Roof',
+            construction=roof_construction.get_ref(),
+            fenestration=[],
+            outside_boundary_condition='outdoors'
+        )
+        surface_x = BuildingSurface(
+            name='RoofWall_X',
+            vertices=edges[-1].to_points() + [ridge_start],
+            surface_type='Wall',
+            construction=wall_construction.get_ref(),
+            fenestration=[],
+            outside_boundary_condition='outdoors'
+        )
+        surface_y = BuildingSurface(
+            name='RoofWall_Y',
+            vertices=edges[1].to_points() + [ridge_end],
+            surface_type='Wall',
+            construction=wall_construction.get_ref(),
+            fenestration=[],
+            outside_boundary_condition='outdoors'
+        )
+        base_surface = BuildingSurface(
+            name='AtticFloor',
+            vertices=base.vertices[:],
+            surface_type='Floor',
+            construction=floor_construction.get_ref(),
+            fenestration=[],
+            outside_boundary_condition=base.IuId
+        )
+
+        # Create Zone
+        attic_zone = Zone(
+            name='AtticZone' if name is None else name,
+            building_surfaces=[surface_a, surface_y, surface_b, surface_x, base_surface],
+            internal_masses=[]
+        )
+
+        # set outside boundary condition of the top of the base zone
+        base.outside_boundary_condition = base_surface.IuId
+
+        return zone, attic_zone
+
+    @staticmethod
+    def update_geometry(self, zone: Zone, new_geom: Box):
+        pass
+        # TODO
+
+    @staticmethod
+    def split_internal(self, zone: Zone):
+        pass
+        # TODO belso zona
 
 
 class BuildingCreator:
@@ -506,7 +690,11 @@ class BuildingCreator:
         self.library = library
 
     def make(self, zones: List[Zone], non_zone_surfaces: Union[List[NonZoneSurface], None] = None, name: str = None,
-             building_function: str = 'residential'):
+             building_function: str = 'residential', eval_adj: bool = True, check_surf_types: bool = True):
+        if eval_adj:
+            zones = ZoneCreator.evaluate_adjacency(zones)
+        if check_surf_types:
+            zones = [ZoneCreator.evaluate_surface_types(zone) for zone in zones]
         return Building(
             name="NoNameBuilding" if name is None else name,
             zones=zones,

@@ -1,3 +1,4 @@
+from json import JSONDecodeError
 from typing import List, Union, Tuple
 import requests
 import json
@@ -64,12 +65,15 @@ class RemoteConnection:
             logger.debug('Server check response: {}'.format(response.text))
             return False
 
-    def run(self, name: str, idf: IDF) -> str:
+    def run(self, name: str, idf: IDF, sim_id: str = None) -> str:
 
         url = self.url + '/run'
         logger.debug('Running simulation at: {}'.format(url))
         data = idf.idfstr()
-        response = requests.post(url=url, params={'name': name}, data=data)
+        params = {'name': name}
+        if sim_id is not None:
+            params['id'] = sim_id
+        response = requests.post(url=url, params=params, data=data)
         return response.text
 
     def results(self, variables: List[str], name: str, sim_id: str, typ: str, period: str):
@@ -78,7 +82,7 @@ class RemoteConnection:
         payload = {'variables': variables, 'name': name, 'id': sim_id, 'type': typ, 'period': period}
         response = requests.get(url=url, params=payload)
         logger.debug('Response from server: {}'.format(response.text))
-        return response.json()
+        return response
 
     def results_detailed(self, variable: str, name: str, sim_id: str, typ: str, period: str):
         url = self.url + '/results/detailed'
@@ -91,6 +95,12 @@ class RemoteConnection:
         url = self.url + '/cleanup'
         logger.debug('Cleaning up server')
         response = requests.get(url=url, params={'name': name})
+        return response.text
+
+    def drop_result(self, name: str, sim_id: str) -> str:
+        url = self.url + '/cleanup/result'
+        logger.debug('Deleting result on server for id: {id}'.format(id=sim_id))
+        response = requests.get(url=url, params={'name': name, 'id': sim_id})
         return response.text
 
 
@@ -216,12 +226,15 @@ class EnergyPlusSimulation:
     def run_local(self):
         self.idf.run(output_directory=self.output_directory)
 
-    def run_remote(self, name: str, force_setup: bool = False) -> str:
+    def run_remote(self, name: str, force_setup: bool = False, sim_id: str = None) -> str:
         # check first
         if not self.server.check(name) or force_setup:
             self.setup_server(name=name)
         # than tun
-        server_response = self.server.run(name=name, idf=self.idf)
+        if sim_id is not None:
+            server_response = self.server.run(name=name, idf=self.idf, sim_id=sim_id)
+        else:
+            server_response = self.server.run(name=name, idf=self.idf)
         return server_response
 
     def setup_server(self, name: str, epw: str = None):
@@ -396,9 +409,12 @@ class EnergyPlusSimulation:
         elif isinstance(variables, str):
             variables = [variables]
 
-        response_json = self.server.results(variables, name, sim_id, typ, period)
+        response = self.server.results(variables, name, sim_id, typ, period)
 
-        return pd.read_json(response_json, orient='split')
+        try:
+            return pd.read_json(response.json(), orient='split')
+        except JSONDecodeError:
+            return response.text
 
     def results_detailed(self, variable: str, name: str = None, sim_id: str = None,
                          typ: str = 'zone', period: str = 'monthly'):
@@ -832,7 +848,7 @@ class SteadyStateCalculation:
         else:  # Cooling
             # set night ventilation for cooling season months
             h_nat_vent_summer = pd.Series(data=h_nat_vent_summer, index=[str(i) for i in range(1, 13)])
-            h_nat_vent_summer.loc[[1, 2, 3, 4, 10, 11, 12]] = 0  # Cooling season only: May-Sept
+            h_nat_vent_summer.loc[['1', '2', '3', '4', '10', '11', '12']] = 0  # Cooling season only: May-Sept
             h_vent = h_nat_vent + h_nat_vent_summer
 
         return h_vent  # [W/K]

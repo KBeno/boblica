@@ -15,7 +15,7 @@ from firepy.model.building import ObjectLibrary, Construction
 
 from firepy.calculation.lca import LCACalculation
 
-Color = Union[str, Tuple[int, int, int, float]]
+Color = Union[str, Tuple[int, int, int, float], Tuple[float, float, float, float]]
 
 
 class GeometryViewer:
@@ -497,119 +497,22 @@ class SimpleViewer:
     def __init__(self):
         self.fig = plt.figure()
         self.ax = self.fig.add_subplot(111, projection="3d")
+        self.points = []
+        self.tags = []
+
+    @staticmethod
+    def eval_color(color: Color, opacity: float = None):
+        if isinstance(color, Tuple):
+            for i in range(3):
+                if color[i] > 1:
+                    return (color[0] / 255, color[1] / 255, color[2] / 255, color[3])
+            return color
+        else:  # str
+            return color
 
     def view(self):
-        # discard the view of axes
-        plt.grid(False)
-        plt.axis('off')
-
-        plt.show()
-
-    def add(self, obj: Union[List, Point, Vector, Line, Rectangle, Box, Face,
-                             BuildingSurface, FenestrationSurface, NonZoneSurface, Zone, Building], **kwargs):
-        if isinstance(obj, List):
-            for e in obj:
-                self.add(e, **kwargs)
-        elif isinstance(obj, BuildingSurface):
-            self.building_surface(obj, **kwargs)
-        elif isinstance(obj, FenestrationSurface):
-            self.fenestration_surface(obj, **kwargs)
-        elif isinstance(obj, NonZoneSurface):
-            self.non_zone_surface(obj, **kwargs)
-        elif isinstance(obj, Zone):
-            self.zone(obj, **kwargs)
-        elif isinstance(obj, Building):
-            self.building(obj, **kwargs)
-
-    def building_surface(self, bs: BuildingSurface,
-                         lines: bool = True,
-                         face: bool = True,
-                         line_color: Color = 'grey',
-                         face_color: Color = 'darkorange',
-                         opacity=1, tag: str = None,
-                         fen_lines: bool = True,
-                         fen_face: bool = True,
-                         fen_line_color: Color = 'grey',
-                         fen_face_color: Color = 'darkcyan',
-                         fen_opacity=0.3,
-                         fen_tag: str = None):
-        pass
-
-    def fenestration_surface(self, fs: FenestrationSurface,
-                             lines: bool = True,
-                             face: bool = True,
-                             line_color: Color = 'grey',
-                             face_color: Color = 'darkcyan',
-                             opacity=0.3, tag: str = None):
-        pass
-
-    def non_zone_surface(self, nzs: NonZoneSurface,
-                         lines: bool = True,
-                         face: bool = True,
-                         line_color: Color = 'darkgreen',
-                         face_color: Color = 'darkcyan'):
-        pass
-
-    def zone(self, zone: Zone,
-             lines: bool = True,
-             face: bool = True,
-             line_color: Color = 'grey',
-             opacity=1,
-             face_colors: Union[Mapping[str, Color], Color] = 'darkorange',
-             fen_lines: bool = True,
-             fen_face: bool = True,
-             fen_line_color: Color = 'grey',
-             fen_face_color: Color = 'darkcyan',
-             fen_opacity=0.3,
-             tag: str = None,
-             fen_tag: str = None):
-        pass
-
-    def building(self, building: Building,
-                 face: bool = True):
-
-        surf_ext_vertices = []
-        surf_int_vertices = []
-        win_vertices = []
-        points = []
-        for zone in building.Zones:
-            for surface in zone.BuildingSurfaces:
-                # create a collection of faces by listing all vertices of them
-                if surface.OutsideBoundaryCondition.lower() == 'outdoors':
-                    surf_ext_vertices.append([vertex.coordinates() for vertex in surface.vertices])
-                else:
-                    surf_int_vertices.append([vertex.coordinates() for vertex in surface.vertices])
-
-                # add window faces to the window collection
-                for win in surface.Fenestration:
-                    win_vertices.append([vertex.coordinates() for vertex in win.vertices])
-                # create a separate list of the points for the scatter plot
-                for vertex in surface.vertices:
-                    points.append(vertex.coordinates())
-        points = np.array(points)
-
-        surf_ext_faces = Poly3DCollection(surf_ext_vertices, linewidths=0.5, edgecolors='k')
-        if face:
-            surf_ext_faces.set_facecolor((1, 0.55, 0, 0.2))
-        else:
-            surf_ext_faces.set_facecolor((0, 0, 1, 0))
-        self.ax.add_collection(surf_ext_faces)
-
-        surf_int_faces = Poly3DCollection(surf_int_vertices, linewidths=0.2, edgecolors='gray')
-        if face:
-            surf_int_faces.set_facecolor((1, 0.55, 0, 0.2))
-        else:
-            surf_int_faces.set_facecolor((0, 0, 1, 0))
-        self.ax.add_collection(surf_int_faces)
-
-        win_faces = Poly3DCollection(win_vertices, linewidths=0.5, edgecolors='b')
-        if face:
-            win_faces.set_facecolor((0, 1, 1, 0.2))
-        else:
-            win_faces.set_facecolor((0, 0, 1, 0))
-
-        self.ax.add_collection(win_faces)
-
+        # create 3d figure
+        points = np.array(self.points)
         self.ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=0)
 
         # Create cubic bounding box to simulate equal aspect ratio
@@ -632,8 +535,201 @@ class SimpleViewer:
         for x, y, z in zip(xb, yb, zb):
             self.ax.plot([x], [y], [z], 'w')
 
+        # Add labels
+        for tag in self.tags:
+            self.ax.text(*tag)
+
+        # discard the view of axes
+        plt.grid(False)
+        plt.axis('off')
+
+        plt.show()
+
+    def add(self, obj: Union[List, Point, Vector, Line, Rectangle, Box, Face,
+                             BuildingSurface, FenestrationSurface, NonZoneSurface, Zone, Building], **kwargs):
+        if isinstance(obj, List):
+            for e in obj:
+                self.add(e, **kwargs)
+        elif isinstance(obj, BuildingSurface):
+            self.building_surface(obj, **kwargs)
+        elif isinstance(obj, FenestrationSurface):
+            self.fenestration_surface(obj, **kwargs)
+        elif isinstance(obj, NonZoneSurface):
+            self.non_zone_surface(obj, **kwargs)
+        elif isinstance(obj, Zone):
+            self.zone(obj, **kwargs)
+        elif isinstance(obj, Building):
+            self.building(obj, **kwargs)
+        # TODO geometry view
+
+    def surface(self, surf: Union[FenestrationSurface, BuildingSurface, NonZoneSurface],
+                lines: bool = True,
+                face: bool = True,
+                line_color: Color = 'b',
+                face_color: Color = (1, 1, 0, 0.2),
+                opacity=None, tag: str = None):
+
+        surf_vertices = []
+        # create a collection of faces by listing all vertices of them
+        surf_vertices.append([vertex.coordinates() for vertex in surf.vertices])
+
+        # add the points for the scatter plot
+        for vertex in surf.vertices:
+            self.points.append(vertex.coordinates())
+
+        if lines:
+            lw = 0.5
+        else:
+            lw = 0
+
+        surf_ext_faces = Poly3DCollection(surf_vertices, linewidths=lw, edgecolors=self.eval_color(line_color))
+        # we plot this only for the lines so set the face color to transparent
+        surf_ext_faces.set_facecolor((0, 0, 1, 0))
+
+        if face:
+            if isinstance(surf, BuildingSurface):
+                face, ijk = BuildingViewer.get_punched_geometry(surf)
+                if ijk is not None:
+                    triangles = []
+                    for i, j, k in zip(ijk[0], ijk[1], ijk[2]):
+                        p_i = face.vertices[i].coordinates()
+                        p_j = face.vertices[j].coordinates()
+                        p_k = face.vertices[k].coordinates()
+                        triangles.append([p_i, p_j, p_k])
+                    triangulated = Poly3DCollection(triangles, linewidths=0, edgecolors=self.eval_color(face_color))
+
+                    triangulated.set_facecolor(self.eval_color(face_color))
+                    if opacity is not None:
+                        triangulated.set_alpha(float(opacity))
+                    self.ax.add_collection(triangulated)
+                else:
+                    surf_ext_faces.set_facecolor(self.eval_color(face_color))
+                    if opacity is not None:
+                        surf_ext_faces.set_alpha(float(opacity))
+
+            else:
+                surf_ext_faces.set_facecolor(self.eval_color(face_color))
+                if opacity is not None:
+                    surf_ext_faces.set_alpha(float(opacity))
+
+        self.ax.add_collection(surf_ext_faces)
+
+        if tag is not None:
+            if tag in surf.__dict__.keys():
+                if isinstance(surf.__dict__[tag], str):
+                    c = surf.centroid()
+                    self.tags.append((c.x, c.y, c.z, surf.__dict__[tag]))
+
+    def building_surface(self, bs: BuildingSurface,
+                         lines: bool = True,
+                         face: bool = True,
+                         line_color: Color = 'k',
+                         face_color: Color = (1, 0.55, 0, 0.2),
+                         opacity: float = 1,
+                         tag: str = None,
+                         fen_lines: bool = True,
+                         fen_face: bool = True,
+                         fen_line_color: Color = 'b',
+                         fen_face_color: Color = (0, 1, 1, 0.7),
+                         fen_opacity=0.7,
+                         fen_tag: str = None):
+
+        self.surface(surf=bs, lines=lines, face=face, line_color=line_color, face_color=face_color, opacity=opacity,
+                     tag=tag)
+
+        # add window faces to the window collection
+        for win in bs.Fenestration:
+            self.add(win, lines=fen_lines, face=fen_face, line_color=fen_line_color, face_color=fen_face_color,
+                     opacity=fen_opacity, tag=fen_tag)
+
+    def fenestration_surface(self, fs: FenestrationSurface,
+                             lines: bool = True,
+                             face: bool = True,
+                             line_color: Color = 'b',
+                             face_color: Color = (0, 1, 1, 0.2),
+                             opacity=None, tag: str = None):
+        self.surface(surf=fs, lines=lines, face=face, line_color=line_color, face_color=face_color, opacity=opacity,
+                     tag=tag)
+
+    def non_zone_surface(self, nzs: NonZoneSurface,
+                         lines: bool = True,
+                         face: bool = True,
+                         line_color: Color = 'k',
+                         face_color: Color = (0, 1, 0, 0.2),
+                         opacity=None, tag: str = None):
+        self.surface(surf=nzs, lines=lines, face=face, line_color=line_color, face_color=face_color, opacity=opacity,
+                     tag=tag)
+
+    def zone(self, zone: Zone,
+             lines: bool = True,
+             face: bool = True,
+             line_color: Color = 'k',
+             opacity: float = 1,
+             face_colors: Union[Mapping[str, Color], Color] = (1, 0.55, 0, 0.2),
+             fen_lines: bool = True,
+             fen_face: bool = True,
+             fen_line_color: Color = 'k',
+             fen_face_color: Color = (0, 1, 1, 0.7),
+             fen_opacity=1,
+             tag: str = None,
+             fen_tag: str = None,
+             fade_internal: bool = True):
+
+        for surface in zone.BuildingSurfaces:
+            if surface.OutsideBoundaryCondition.lower() == 'outdoors':
+                if isinstance(face_colors, Mapping):
+                    face_color = face_colors[surface.IuId]
+                else:
+                    face_color = face_colors
+                self.add(surface, lines=lines, face=face, line_color=line_color, face_color=face_color,
+                         opacity=opacity, tag=tag, fen_lines=fen_lines, fen_face=fen_face,
+                         fen_line_color=fen_line_color, fen_face_color=fen_face_color, fen_opacity=fen_opacity,
+                         fen_tag=fen_tag)
+            else:
+                if fade_internal:
+                    internal_opacity = 0.1
+                    internal_line_color = 'gray'
+                else:
+                    internal_opacity = opacity
+                    internal_line_color = line_color
+                if isinstance(face_colors, Mapping):
+                    face_color = face_colors[surface.IuId]
+                else:
+                    face_color = face_colors
+                self.add(surface, lines=lines, face=face, line_color=internal_line_color, face_color=face_color,
+                         opacity=internal_opacity, tag=tag, fen_lines=fen_lines, fen_face=fen_face,
+                         fen_line_color=fen_line_color, fen_face_color=fen_face_color, fen_opacity=fen_opacity,
+                         fen_tag=fen_tag)
+
+    def building(self, building: Building,
+             lines: bool = True,
+             face: bool = True,
+             line_color: Color = 'k',
+             opacity: float = 1,
+             face_colors: Union[Mapping[str, Color], Color] = (1, 0.55, 0, 0.2),
+             fen_lines: bool = True,
+             fen_face: bool = True,
+             fen_line_color: Color = 'k',
+             fen_face_color: Color = (0, 1, 1, 0.7),
+             fen_opacity=1,
+             tag: str = None,
+             fen_tag: str = None,
+             fade_internal: bool = True):
+
+        for zone in building.Zones:
+            self.add(zone, lines=lines, face=face, line_color=line_color, face_colors=face_colors,
+                     opacity=opacity, tag=tag, fen_lines=fen_lines, fen_face=fen_face,
+                     fen_line_color=fen_line_color, fen_face_color=fen_face_color, fen_opacity=fen_opacity,
+                     fen_tag=fen_tag, fade_internal=fade_internal)
+
+        for surface in building.NonZoneSurfaces:
+            self.add(surface)
+
 
 class ResultViewer:
+    """
+    A class to visualize the results of an LCA or Cost calculation
+    """
 
     def __init__(self, calculation: Union[LCACalculation, CostCalculation]):
         self.calculation = calculation
@@ -1066,7 +1162,8 @@ class ConstructionViewer:
     def list_materials(library: ObjectLibrary) -> List[str]:
         return [mat.Name for mat in library.opaque_materials.values()]
 
-    def view(self, construction_name: str, library: ObjectLibrary):
+    def view(self, construction_name: str, library: ObjectLibrary, flip: bool = False):
+        # TODO WindowMaterial
         if library.default_key != 'Name':
             library.change_key(to='Name')
         construction = library.constructions[construction_name]
@@ -1076,11 +1173,19 @@ class ConstructionViewer:
         spacing = 0
         min_text_pos = 0.0
         ax.plot([0, 1], [0, 0], color='gray', linewidth=1)
-        for material in construction.Layers[::-1]:
+        if not flip:
+            layers = construction.Layers[::-1]
+        else:
+            layers = construction.Layers[::1]
+        for material in layers:
             material = library.get(material)
 
+            used_colors = [c for c in self.colors.values()]
             if material.Name not in self.colors:
                 color = 'C{}'.format(color_index)
+                while color in used_colors:
+                    color_index += 1
+                    color = 'C{}'.format(color_index)
                 color_index += 1
                 self.colors[material.Name] = color
             else:
@@ -1096,7 +1201,7 @@ class ConstructionViewer:
             top = spacing + material.Thickness
 
             text_pos = max((bottom + top) / 2, min_text_pos)
-            min_text_pos = text_pos + 0.07
+            min_text_pos = text_pos + 0.04
             ax.text(x=0.2, y=text_pos, s='{t} cm'.format(t=material.Thickness * 100),
                     verticalalignment='center', color=color, horizontalalignment='right',
                     bbox=dict(facecolor='white', alpha=0.8, edgecolor='white', boxstyle=('Round, pad=0.15')))
@@ -1107,4 +1212,4 @@ class ConstructionViewer:
             ax.fill_between(x=[0, 1], y1=[bottom, bottom], y2=[top, top], alpha=0.6, facecolor=color)
             spacing = top
         ax.axis('off')
-        plt.show()
+        return ax

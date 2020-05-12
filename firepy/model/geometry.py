@@ -121,7 +121,15 @@ class Plane:
         self.normal = normal
         self.point = point
 
-    def intersect(self, other):
+    def __str__(self):
+        return self.pretty_print()
+
+    def pretty_print(self, indentation=''):
+        return '{ind}Plane:\n'.format(ind=indentation) +\
+               '{ind}|--Normal: {s}\n'.format(s=self.normal.pretty_print(), ind=indentation) +\
+               '{ind}`--Point: {e}\n'.format(e=self.point.pretty_print(), ind=indentation)
+
+    def intersect(self, other: Union['Ray', 'Plane']):
         if isinstance(other, Ray):
             # solve the linear equation system aX = b
             plane_eq, plane_ord = self.get_equation(standardize=True)
@@ -153,7 +161,7 @@ class Plane:
 
                 # set this coordinate to 0 to solve the equation of the two planes
                 eq1, ord1 = self.get_equation(standardize=True)
-                eq2, ord2 = self.get_equation(standardize=True)
+                eq2, ord2 = other.get_equation(standardize=True)
 
                 a = np.append(eq1, eq2, axis=0)
                 b = np.append(ord1, ord2, axis=0)
@@ -162,13 +170,15 @@ class Plane:
                 i[set_0_coord] = False
                 a = a[:, i]
 
+                # we should be able to solve this, because parallel case was checked already
                 solution = np.linalg.solve(a, b)
+
                 if set_0_coord == 0:
-                    point = Point(0, solution[0, 0], solution[0, 1])
+                    point = Point(0, solution[0, 0], solution[1, 0])
                 elif set_0_coord == 1:
-                    point = Point(solution[0, 0], 0, solution[0, 1])
+                    point = Point(solution[0, 0], 0, solution[1, 0])
                 else:
-                    point = Point(solution[0, 0], solution[0, 1], 0)
+                    point = Point(solution[0, 0], solution[1, 0], 0)
 
             return Ray(
                 vector=vector,
@@ -340,6 +350,9 @@ class Line:
             point=self.start
         )
 
+    def flip(self) -> 'Line':
+        return Line(start=self.end, end=self.start)
+
 
 class Rectangle:
 
@@ -489,10 +502,10 @@ class Face:
         else:
             return abs(area)
 
-    def perimeter(self):
+    def perimeter(self) -> float:
         return sum([side.length() for side in self.to_lines()])
 
-    def to_lines(self):
+    def to_lines(self) -> List[Line]:
         return [Line(s, e) for s, e in zip(self.vertices, self.vertices[1:] + self.vertices[:1])]
 
     def __eq__(self, other):

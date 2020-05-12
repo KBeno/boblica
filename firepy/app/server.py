@@ -9,6 +9,7 @@ import uuid
 from importlib import reload
 from pathlib import Path
 from typing import MutableMapping, Tuple, Union, List, Mapping
+from datetime import datetime
 
 import redis
 import dill
@@ -55,6 +56,8 @@ R = redis.Redis(host=redis_host, port=redis_port)
 #   calculation_name:cost_calculation,
 #   calculation_name:energy_calculation,
 #   calculation_name:weather_data]
+#   calculation_name:last_calculation (timestamp of last calculation)
+#   calculation_name:running (integer number of currently running calculations)
 
 # setup energy calculation server from config
 
@@ -90,6 +93,8 @@ def setup():
 
     # get calculation name
     setup_name = request.args.get('name')
+
+    R.set('{name}:running'.format(name=setup_name), 0)
 
     # get type of data
     content_type = request.args.get('type')
@@ -173,8 +178,10 @@ def calculate():
     if name is None:
         return "Please provide 'name' argument to specify which model to calculate"
 
+    R.incr('{name}:running'.format(name=name))
     parameters, msg = update_params(name=name)
     if msg is not None:
+        R.decr('{name}:running'.format(name=name))
         return msg
 
     reload(firepy.setup.functions)
@@ -186,7 +193,7 @@ def calculate():
 
         # ----------------------- CALCULATIONS --------------------------------
         tic = time.perf_counter()
-        impact_result, cost_result, energy_result, sim_id = run(name=name, model=model, idf=idf)
+        impact_result, cost_result, energy_result, sim_id = run(name=name, model=model, idf=idf, drop_sim_result=True)
         toc = time.perf_counter()
 
         # measure execution time
@@ -216,10 +223,14 @@ def calculate():
     result_series = result_series.append(result)
     result_series['calculation_id'] = sim_id
     result_series['calculation_time'] = exec_time
+    result_series['timestamp'] = time.perf_counter()
     result_frame = result_series.to_frame().transpose()
 
     result_frame.to_sql(name=name, con=RESULT_DB, if_exists='append', index=False)
 
+    timestamp = datetime.now().strftime('%Y.%m.%d %H:%M:%S')
+    R.set('{name}:last_calculation'.format(name=name), timestamp)
+    R.decr('{name}:running'.format(name=name))
     return jsonify(result.to_dict())
 
 
@@ -229,16 +240,48 @@ def status():
     Get status information of the server
     :return: json
     """
+    name = request.args.get('name')
 
-    setups = [k.decode() for k in R.keys()]
-    setups = [s.split(':')[0] for s in setups]
-    setups = list(set(setups))
+    if name is None:
+        setups = [k.decode() for k in R.keys()]
+        setups = [s.split(':')[0] for s in setups if ':' in s]
+        setups = list(set(setups))
 
-    result_tables = RESULT_DB.table_names()
-    info = {
-        'setups': setups,
-        'results': result_tables
-    }
+        result_tables = RESULT_DB.table_names()
+        running = [R.get('{name}:running'.format(name=name)) for name in setups]
+        running = [n.decode() for n in running if n is not None]
+        info = {
+            'setups': sorted(setups),
+            'results': sorted(result_tables),
+            'running': running
+        }
+
+    else:
+        # return info for specific setup
+        query = 'SELECT COUNT(*) FROM "{tbl}"'.format(tbl=name)
+        if not RESULT_DB.has_table(name):
+            result_count = 0
+        else:
+            result = RESULT_DB.execute(query)
+            result_count = result.fetchone()[0]
+            result.close()
+
+        last_calc = R.get('{name}:last_calculation'.format(name=name))
+        running = R.get('{name}:running'.format(name=name))
+        if last_calc is not None:
+            last_calc = last_calc.decode()
+        else:
+            last_calc = 'never'
+        if running is not None:
+            running = running.decode()
+        else:
+            running = 'unknown'
+
+        info = {
+            'result_count': result_count,
+            'last_calc': last_calc,
+            'running': running
+        }
 
     return jsonify(info)
 
@@ -265,6 +308,22 @@ def results():
 
     return jsonify(result.to_json(orient='split'))
 
+@app.route("/results/upload", methods=['POST'])
+def results_upload():
+    name = request.args.get('name')
+    if name is None:
+        return "Please provide 'name' argument to specify which results to return"
+
+    # read pandas DataFrame
+    content = request.get_json()
+    result_frame = pd.read_json(content, orient='split')
+
+    try:
+        result_frame.to_sql(name=name, con=RESULT_DB, if_exists='fail', index=False)
+    except ValueError:
+        return "Result table with name {n} exists".format(n=name)
+
+    return 'Results uploaded to database'
 
 @app.route("/instate", methods=['GET', 'POST'])
 def instate():
@@ -340,7 +399,7 @@ def reinstate():
     model, idf = update_model(name=name, parameters=parameters)
 
     # ----------------------- CALCULATIONS --------------------------------
-    impact_result, cost_result, energy_result, sim_id = run(name=name, model=model, simulation_id=calc_id)
+    impact_result, cost_result, energy_result, sim_id = run(name=name, model=model, idf=idf, simulation_id=calc_id)
 
     # ----------------------- EVALUATION --------------------------------
     reload(firepy.setup.functions)
@@ -531,14 +590,25 @@ def cleanup():
             return 'No result found for name: {n}'.format(n=name)
 
         query = 'DROP TABLE "{n}"'.format(n=name)
-        RESULT_DB.execute(query)
+        res = RESULT_DB.execute(query)
+        res.close()
 
         app.logger.info('Result table {n} has been cleared'.format(n=name))
         msg += 'Existing table {n} has been cleared; '.format(n=name)
 
     if target == 'simulations' or target is None:
-        app.logger.info('Deleting simulation results for {n}'.format(n=name))
+        app.logger.info('Deleting simulation results for {n}; '.format(n=name))
         msg += ENERGY_CALCULATION.server.clean_up(name=name)
+
+    if target == 'setups' or target is None:
+        app.logger.info('Deleting setup for {n}'.format(n=name))
+        setups = [k.decode() for k in R.keys()]
+        sp_to_remove = [s for s in setups if name in s]
+        if sp_to_remove:
+            n_deleted = R.delete(*sp_to_remove)
+            msg += 'Setups items ({i}) has been deleted for {n}; '.format(n=name, i=n_deleted)
+        else:
+            return 'No setup found for name: {n}'.format(n=name)
 
     if not msg:
         return 'Unknown target: {t}'.format(t=target)
@@ -549,7 +619,7 @@ def cleanup():
 def update_params(name: str,
                   calculation_id: str = None) -> Tuple[MutableMapping[str, Parameter], Union[str, None]]:
     # update parameters in the setup
-    app.logger.info('Loading parameters for {n} from redis'.format(n=name))
+    app.logger.debug('Loading parameters for {n} from redis'.format(n=name))
 
     param_dump = R.get('{name}:parameters'.format(name=name))
     if param_dump is None:
@@ -624,6 +694,8 @@ def update_params(name: str,
 def update_model(name: str, parameters: MutableMapping[str, Parameter]) -> Tuple[Building, IDF]:
 
     app.logger.info('Updating model: {n}'.format(n=name))
+    param_values = ['{n}: {v}'.format(n=name, v=p.value) for name, p in parameters.items()]
+    app.logger.debug('Parameters: ' + '; '.join(param_values))
 
     # update the model
     model: Building = dill.loads(R.get('{name}:model'.format(name=name)))
@@ -636,7 +708,7 @@ def update_model(name: str, parameters: MutableMapping[str, Parameter]) -> Tuple
     R.set('{name}:model'.format(name=name), dill.dumps(model))
 
     # update idf too along with the model
-    app.logger.info('Updating idf based on model: {n}'.format(n=name))
+    app.logger.debug('Updating idf based on model: {n}'.format(n=name))
 
     idf_string = R.get('{name}:idf'.format(name=name))
     IDF_PARSER.idf = idf_string.decode()
@@ -650,7 +722,8 @@ def run(name: str,
         model: Building,
         idf: IDF = None,
         simulation_id: str = None,
-        simulation_options: MutableMapping = None) -> Tuple[ImpactResult, CostResult, pd.DataFrame, str]:
+        simulation_options: MutableMapping = None,
+        drop_sim_result: bool = False) -> Tuple[ImpactResult, CostResult, pd.DataFrame, str]:
     """
     Run calculations with the model. Either idf or simulation_id is needed. If simulation_id is given, no
     simulation will run, existing results will be read
@@ -659,9 +732,42 @@ def run(name: str,
     :param idf: IDF representing the same model to use in simulation
     :param simulation_id: if simulation has been made before, the id of the simulation
     :param simulation_options: optional dictionary to pass to customize the simulation
+    :param drop_sim_result: weather to keep the simulation results on the server or not
     :return: impact result and cost result
     """
     energy_calculation = R.get('{name}:energy_calculation'.format(name=name)).decode()
+
+    def run_simulation(options, sim_id=None):
+        app.logger.debug('Running simulation')
+
+        frequency = options['output_resolution']
+        if frequency is not None:
+            ENERGY_CALCULATION.output_frequency = frequency
+
+        ENERGY_CALCULATION.idf = idf
+
+        if options['clear_existing_variables']:
+            ENERGY_CALCULATION.clear_outputs()
+
+        zone_outputs: List = options['outputs']['zone']
+        app.logger.debug('Setting zone outputs: {}'.format(zone_outputs))
+        if zone_outputs:  # not an empty list
+            ENERGY_CALCULATION.set_outputs(*zone_outputs, typ='zone')
+        else:  # this would never happen since we set the defaults above
+            ENERGY_CALCULATION.set_outputs('heating', 'cooling', 'lights', typ='zone')
+
+        surface_outputs: List = options['outputs']['surface']
+        app.logger.debug('Setting surface outputs: {}'.format(surface_outputs))
+        if surface_outputs:  # not an empty list
+            ENERGY_CALCULATION.set_outputs(*surface_outputs, typ='surface')
+
+        if sim_id is not None:
+            sim_id = ENERGY_CALCULATION.run(name=name, sim_id=sim_id)
+        else:
+            sim_id = ENERGY_CALCULATION.run(name=name)
+
+        app.logger.info('Simulation ready, id: {sid}'.format(sid=sim_id))
+        return sim_id
 
     # energy calculation
     if energy_calculation == 'simulation':
@@ -696,40 +802,41 @@ def run(name: str,
         if 'clear_existing_variables' not in energy_calculation_options:
             energy_calculation_options['clear_existing_variables'] = False
 
-        if simulation_id is None:
-            app.logger.info('Running simulation')
+        if simulation_id is not None:
+            app.logger.info('Getting previous results for simulation with id: {sid}'.format(sid=simulation_id))
+            response = ENERGY_CALCULATION.results(variables=['heating', 'cooling', 'lights'],
+                                                  name=name,
+                                                  sim_id=simulation_id,
+                                                  typ='zone', period='runperiod')
 
-            frequency = energy_calculation_options['output_resolution']
-            if frequency is not None:
-                ENERGY_CALCULATION.output_frequency = frequency
+            if 'No result directory' in response:
+                app.logger.info('No results found for id: {sid}, rerunning simulation...'.format(sid=simulation_id))
+                simulation_id = run_simulation(options=energy_calculation_options, sim_id=simulation_id)
 
-            ENERGY_CALCULATION.idf = idf
+                app.logger.info('Getting results for simulation with id: {sid}'.format(sid=simulation_id))
+                response = ENERGY_CALCULATION.results(variables=['heating', 'cooling', 'lights'],
+                                                      name=name,
+                                                      sim_id=simulation_id,
+                                                      typ='zone', period='runperiod')
 
-            if energy_calculation_options['clear_existing_variables']:
-                ENERGY_CALCULATION.clear_outputs()
+        else:
+            simulation_id = run_simulation(options=energy_calculation_options)
 
-            zone_outputs: List = energy_calculation_options['outputs']['zone']
-            app.logger.debug('Setting zone outputs: {}'.format(zone_outputs))
-            if zone_outputs:  # not an empty list
-                ENERGY_CALCULATION.set_outputs(*zone_outputs, typ='zone')
-            else:  # this would never happen since we set the defaults above
-                ENERGY_CALCULATION.set_outputs('heating', 'cooling', 'lights', typ='zone')
+            app.logger.info('Getting results for simulation with id: {sid}'.format(sid=simulation_id))
+            response = ENERGY_CALCULATION.results(variables=['heating', 'cooling', 'lights'],
+                                                  name=name,
+                                                  sim_id=simulation_id,
+                                                  typ='zone', period='runperiod')
 
-            surface_outputs: List = energy_calculation_options['outputs']['surface']
-            app.logger.debug('Setting surface outputs: {}'.format(surface_outputs))
-            if surface_outputs:  # not an empty list
-                ENERGY_CALCULATION.set_outputs(*surface_outputs, typ='surface')
-
-            simulation_id = ENERGY_CALCULATION.run(name=name)
-
-            app.logger.info('Simulation ready, id: {sid}'.format(sid=simulation_id))
-
-        app.logger.info('Getting results for simulation with id: {sid}'.format(sid=simulation_id))
-
-        energy_calc_results = ENERGY_CALCULATION.results(variables=['heating', 'cooling', 'lights'],
-                                                         name=name,
-                                                         sim_id=simulation_id,
-                                                         typ='zone', period='runperiod')
+        if isinstance(response, pd.DataFrame):
+            energy_calc_results = response
+            if drop_sim_result:
+                app.logger.debug('Disposing result of simulation: {sid}'.format(sid=simulation_id))
+                ENERGY_CALCULATION.server.drop_result(name=name, sim_id=simulation_id)
+        else:
+            error_message = 'EnergyPlus error: {t}'.format(t=response)
+            app.logger.info(error_message)
+            raise Exception(error_message)
         calculation_id = simulation_id
 
     elif energy_calculation == 'steady_state':
@@ -746,6 +853,7 @@ def run(name: str,
     else:
         raise Exception('Energy calculation option "{ec}" not implemented.'.format(ec=energy_calculation))
 
+    # TODO make impact and cost calculation optional
     # impact calculation
     app.logger.info('Calculating life cycle impact for: {id}'.format(id=calculation_id))
 
