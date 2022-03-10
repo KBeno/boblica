@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from typing import Mapping, Union, MutableMapping, List, Tuple
 from pathlib import Path
 import logging
@@ -152,15 +153,29 @@ class ImpactResult:
     A collection of all calculated impacts of an object (e.g. Construction) as Impact instances
     """
 
-    def __init__(self, basis_unit):
-        self.BasisUnit = basis_unit  # the unit of object that the impact refers to (e.g. m2 for a Construction)
+    def __init__(self, basis_unit, stages: List[str] = None, dt: List = None):
+        """
 
-        stages = ['A1-3', 'A4-5', 'B1-7', 'C1-4'] + \
-                 ['A{}'.format(i + 1) for i in range(5)] + \
-                 ['B{}'.format(i + 1) for i in range(7)] + \
-                 ['C{}'.format(i + 1) for i in range(4)]
+        :param basis_unit: the unit of object that the impact refers to (e.g. m2 for a Construction)
+        :param stages: life cycle stages (name of lower level columns) e.g. ['A1-3']
+        :param dt: date or time (name of upper level columns) e.g. [2020, 2021]
+        """
+        self.BasisUnit = basis_unit
 
-        df = pd.DataFrame(columns=stages)
+        if stages is None:
+            stages = ['A1-3', 'A4-5', 'B1-7', 'C1-4'] + \
+                     ['A{}'.format(i + 1) for i in range(5)] + \
+                     ['B{}'.format(i + 1) for i in range(7)] + \
+                     ['C{}'.format(i + 1) for i in range(4)]
+
+        if dt is None:
+            dt = ['timeless']
+
+        stage_cols = stages * len(dt)
+        dt_cols = [dtc for dtc in dt for _ in stages]
+        columns = pd.MultiIndex.from_arrays([dt_cols, stage_cols])
+
+        df = pd.DataFrame(columns=columns)
  
         self._impacts = df
 
@@ -170,7 +185,7 @@ class ImpactResult:
         Get impact results as Pandas DataFrame
 
         :return: pandas DataFrame
-            - columns: life cycle stages
+            - columns: date time, life cycle stages (MultiIndex)
             - index: impact category
         """
         return self._impacts
@@ -184,16 +199,18 @@ class ImpactResult:
             raise UnitOfMeasurementError('Units of ImpactResults are not compatible: {} + {}'.format(
                 self.BasisUnit, other.BasisUnit
             ))
-        self.impacts = self.impacts.add(other.impacts, fill_value=0)
-        return self
+        res = ImpactResult(basis_unit=self.BasisUnit)
+        res.impacts = self.impacts.add(other.impacts, fill_value=0)
+        return res
 
     def __sub__(self, other: 'ImpactResult') -> 'ImpactResult':
         return self + (other * -1)
 
     def __mul__(self, other: Union[int, float]) -> 'ImpactResult':
-        self.impacts = self.impacts.mul(other)
+        res = ImpactResult(basis_unit=self.BasisUnit)
+        res.impacts = self.impacts.mul(other)
         # TODO update BasisUnit of result
-        return self
+        return res
 
 
 class InventoryItem:
@@ -241,6 +258,7 @@ class Inventory:
 class LCACalculation:
 
     def __init__(self, reference_service_period: int = 50,
+                 starting_date: float = None,
                  life_cycle_data: Union[str, pd.DataFrame] = None,
                  impact_data: Union[str, pd.DataFrame] = None,
                  db = None, olca = None,
@@ -265,6 +283,11 @@ class LCACalculation:
 
         # the reference service period in years
         self.rsp = reference_service_period
+
+        if starting_date is None:
+            self.sdt = float(datetime.now().year)
+        else:
+            self.sdt = starting_date
 
         # # what impacts will be calculated
         # this is unused, calculations are made for all available impact categories from impact_data
@@ -374,10 +397,11 @@ class LCACalculation:
         # Create empty DataFrames
         lca_data = pd.DataFrame(columns=['Name', 'DbId', 'ModelName', 'ProductionId', 'TransportId', 'WasteTreatmentId',
                                          'WasteTreatmentTransportId', 'LifeTime', 'CuttingWaste', 'SurfaceWeight',
-                                         'Density'])
+                                         'Weight', 'Density'])
 
-        column_labels = [('Metadata', 'DbId'), ('Metadata', 'Name'), ('Metadata', 'Unit'), ('Metadata', 'OlcaId'),
-                         ('Metadata', 'OlcaName'), ('Metadata', 'Location'), ('Metadata', 'Adaptation'),
+        column_labels = [('Metadata', 'DbId'), ('Metadata', 'Name'), ('Metadata', 'Unit'), ('Metadata', 'Date'),
+                         ('Metadata', 'OlcaId'), ('Metadata', 'OlcaName'), ('Metadata', 'Location'),
+                         ('Metadata', 'Adaptation'),
                          ('Impact categories', '[Impact category]'), ('Impact categories', '[...]')]
         cols = pd.MultiIndex.from_tuples(column_labels)
         impact_data = pd.DataFrame(columns=cols)
@@ -403,9 +427,11 @@ class LCACalculation:
             impact_data_lin.loc[0, ('Metadata', 'Name')] = 'Production of {n}'.format(n=material_name)
             impact_data_lin.loc[0, ('Metadata', 'DbId')] = 'p{n:03n}'.format(n=counter)
             impact_data_lin.loc[0, ('Metadata', 'Unit')] = unit
+            impact_data_lin.loc[0, ('Metadata', 'Date')] = '[timeless]'
             impact_data_lin.loc[1, ('Metadata', 'Name')] = 'Waste treatment of {n}'.format(n=material_name)
             impact_data_lin.loc[1, ('Metadata', 'DbId')] = 'w{n:03n}'.format(n=counter)
             impact_data_lin.loc[1, ('Metadata', 'Unit')] = unit
+            impact_data_lin.loc[1, ('Metadata', 'Date')] = '[timeless]'
 
             impact_dat = impact_dat.append(impact_data_lin, ignore_index=True)
             return impact_dat
@@ -434,11 +460,20 @@ class LCACalculation:
         impact_data_lines.loc[0, ('Metadata', 'Name')] = 'Transportation of materials'
         impact_data_lines.loc[0, ('Metadata', 'DbId')] = 't{n:03n}'.format(n=1)
         impact_data_lines.loc[0, ('Metadata', 'Unit')] = '[kg]'
+        impact_data_lines.loc[0, ('Metadata', 'Date')] = '[timeless]'
         impact_data_lines.loc[1, ('Metadata', 'Name')] = 'Transportation of waste'
         impact_data_lines.loc[1, ('Metadata', 'DbId')] = 'tw{n:03n}'.format(n=1)
         impact_data_lines.loc[1, ('Metadata', 'Unit')] = '[kg]'
+        impact_data_lines.loc[1, ('Metadata', 'Date')] = '[timeless]'
 
         impact_data = impact_data.append(impact_data_lines, ignore_index=True)
+
+        for system in [building.HVAC.Heating,
+                       building.HVAC.Cooling,
+                       building.HVAC.Lighting]:
+            lca_data = add_lca_data(system, lca_data, required=['LifeTime', 'CuttingWaste', 'Weight'])
+            impact_data = add_impact_data(system, '[pcs]', impact_data)
+            counter += 1
 
         energy_sources = set([h.energy_source for h in [building.HVAC.Heating,
                                                         building.HVAC.Cooling,
@@ -453,6 +488,7 @@ class LCACalculation:
             impact_data_lines.loc[0, ('Metadata', 'Name')] = 'Energy from EnergyCarrier_{n}'.format(n=energy_source)
             impact_data_lines.loc[0, ('Metadata', 'DbId')] = 'p{n:03n}'.format(n=counter)
             impact_data_lines.loc[0, ('Metadata', 'Unit')] = '[kWh or MJ]'
+            impact_data_lines.loc[0, ('Metadata', 'Date')] = '[timeless]'
             impact_data = impact_data.append(impact_data_lines, ignore_index=True)
 
             counter += 1
@@ -488,22 +524,25 @@ class LCACalculation:
             if pd.notna(process_id):
                 if pd.isna(data_item[('Metadata', 'Adaptation')]):
                     localize = None
+                    year = None
                 else:
                     localize = data_item[('Metadata', 'Adaptation')]
-                system_id = olca_ipc.create_product_system(process_id=process_id, localization=localize)
+                    if data_item[('Metadata', 'Date')] != 'timeless':
+                        year = data_item[('Metadata', 'Date')]
+                    else:
+                        year = None
+                system_id = olca_ipc.create_product_system(process_id=process_id, localization=localize, year=year)
                 impact_method = olca_ipc.get_impact_method(method_id=impact_method_id)
                 res: pd.Series = olca_ipc.calculate_product_system(method=impact_method,
                                                                    system_id=system_id,
-                                                                   localization=localize)
+                                                                   localization=localize,
+                                                                   year=year)
                 # Change index to multiindex
                 res.index = pd.MultiIndex.from_tuples([('Impact categories', ic) for ic in res.index])
-                olca_results[db_id] = res
+                olca_results[i] = res
         olca_result_all = pd.concat(olca_results, axis='columns').T
 
-        # do the join on the DbId id
-        impact_data.index = impact_data[('Metadata', 'DbId')]
-
-        impact_data = impact_data.join(olca_result_all).reset_index(drop=True)
+        impact_data = impact_data.join(olca_result_all)
         impact_data = impact_data.drop(columns=[('Impact categories', '[Impact category]'),
                                                 ('Impact categories', '[...]')],
                                        errors='ignore')
@@ -617,8 +656,32 @@ class LCACalculation:
 
         return impact_result
 
-    def __production(self, material: str, weight: float = None, volume: float = None,
-                     fraction: float = 1) -> pd.Series:  # Name or DbId
+    def get_dt_impact_data(self, db_id, dt) -> pd.Series:
+        """Get impact data for the specific datetime validity"""
+        impact_data = self.ImpactData.loc[db_id, :]  # pd.Series / pd.DataFrame with MultiIndex
+
+        dataset_name = impact_data['Metadata', 'Name']
+        if isinstance(impact_data, pd.Series):
+            # only one dataset
+            if impact_data['Metadata', 'Date'] != 'timeless':
+                raise DateValidityError('Please provide "timeless" impact values for dataset: {mat}'.format(
+                    mat=dataset_name))
+
+        else:
+            impact_data = impact_data[impact_data['Metadata', 'Date'].astype(str) == str(dt)].squeeze()
+
+            if impact_data.empty:
+                raise DateValidityError('No valid impact values found for date: {dt} for dataset: {mat}'.format(
+                    mat=dataset_name, dt=dt))
+
+            elif isinstance(impact_data, pd.DataFrame):
+                raise DateValidityError('Multiple valid impact values found for date: {dt} for dataset: {mat}'.format(
+                    mat=dataset_name, dt=dt))
+
+        return impact_data
+
+    def __production(self, material: str, weight: float = None, volume: float = None, n_units: float = None,
+                     fraction: float = 1, dt: Union[str, float] = 'timeless') -> pd.Series:  # Name or DbId
         """
         Function to calculate the production impact of materials (OpaqueMaterial, WindowMaterial, ShadingMaterial
         :param material: Name or DbId of the material
@@ -628,7 +691,7 @@ class LCACalculation:
         :return: impact for all impact categories
         """
         production_id = self.LifeCycleData.loc[material, 'ProductionId']
-        impact_data = self.ImpactData.loc[production_id, :]  # pd.Series with MultiIndex
+        impact_data = self.get_dt_impact_data(production_id, dt)  # pd.Series with MultiIndex
 
         if impact_data['Metadata', 'Unit'] == 'kg':
             if weight is None:
@@ -643,23 +706,28 @@ class LCACalculation:
         elif impact_data['Metadata', 'Unit'] == 'm2':
             impacts = impact_data['Impact categories'] * fraction  # pd.Series SingleIndex
 
+        elif impact_data['Metadata', 'Unit'] == 'pcs':  # for HVAC systems
+            if n_units is None:
+                raise UnitOfMeasurementError('Please provide number of units for material: {mat}'.format(mat=material))
+            impacts = impact_data['Impact categories'] * n_units * fraction  # pd.Series SingleIndex
+
         else:
             message = 'Unit of material in model does not match the unit of material in impact data:\n'
             message += '{mat} - {mat_u} <-> {i_u} - {i}'.format(
-                mat=material, mat_u='kg or m2',
+                mat=material, mat_u='kg / m2 / m3 / pcs',
                 i=impact_data['Metadata', 'Name'], i_u=impact_data['Metadata', 'Unit']
             )
             raise UnitOfMeasurementError(message)
         return impacts
 
-    def __transport(self, transport: str, weight: float) -> pd.Series:
+    def __transport(self, transport: str, weight: float, dt: Union[str, float] = 'timeless') -> pd.Series:
         """
         Function to calculate the transportation impact of materials or waste
         :param transport: DbId or Name of material/waste
         :param weight: in kg
         :return: transport impact for all impact categories
         """
-        transport_data = self.ImpactData.loc[transport, :]
+        transport_data = self.get_dt_impact_data(transport, dt)
 
         if transport_data['Metadata', 'Unit'] == 'kg':
             transport = transport_data['Impact categories'] * weight  # pd.Series SingleIndex
@@ -673,36 +741,40 @@ class LCACalculation:
             raise UnitOfMeasurementError(message)
         return transport
 
-    def __replacement(self, material: str, life_time: int, weight: float = None, volume: float = None,
-                      fraction: float = 1) -> pd.Series:
+    def __replacement(self, material: str, weight: float = None, volume: float = None,
+                      n_units: float = None, fraction: float = 1, dt: Union[str, float] = 'timeless') -> pd.Series:
         """
-        Function to calculate the replacement impact of materials (OpaqueMaterial, WindowMaterial, ShadingMaterial
+        Function to calculate a ONE TIME replacement impact of materials
+        (OpaqueMaterial, WindowMaterial, ShadingMaterial)
+
         :param material: Name or DbId of the material
         :param fraction: the amount to be replaced in fraction of weight or area
-        :param life_time: in years
         :param weight: in kg (needed only if the impact data is not in m2 but in kg)
         :param volume: in m3 (needed only if the impact data is not in m2 but in m3)
+        :param dt: date validity
         :return:
         """
 
-        # count of replacements
-        replacement_count = (self.rsp - 1) // life_time
-        # -1 because we want to make sure that if the rsp equals to the lifetime, no replacement is calculated
+        # # count of replacements
+        # replacement_count = (self.rsp - 1) // life_time
+        # # -1 because we want to make sure that if the rsp equals to the lifetime, no replacement is calculated
 
         transport_id = self.LifeCycleData.loc[material, 'TransportId']
 
-        replacement = self.__production(material=material, weight=weight, volume=volume, fraction=fraction)
-        replacement += self.__transport(transport=transport_id, weight=weight)
-        replacement += self.__waste_treatment(material=material, weight=weight, volume=volume, fraction=fraction)
+        replacement = self.__production(material=material, weight=weight, volume=volume, fraction=fraction,
+                                        n_units=n_units, dt=dt)
+        replacement += self.__transport(transport=transport_id, weight=weight, dt=dt)
+        replacement += self.__waste_treatment(material=material, weight=weight, volume=volume, fraction=fraction,
+                                              n_units=n_units, dt=dt)
         # incl cutting_waste
 
-        replacement *= replacement_count
+        # replacement *= replacement_count
         return replacement
 
-    def __waste_treatment(self, material: str, weight: float, volume: float = None,
-                          fraction: float = 1):
+    def __waste_treatment(self, material: str, weight: float, volume: float = None, n_units: float = None,
+                          fraction: float = 1, dt: Union[str, float] = 'timeless'):
         waste_scenario = self.LifeCycleData.loc[material, 'WasteTreatmentId']
-        waste_data = self.ImpactData.loc[waste_scenario, :]
+        waste_data = self.get_dt_impact_data(waste_scenario, dt)
 
         if waste_data['Metadata', 'Unit'] == 'kg':
             if weight is None:
@@ -716,6 +788,11 @@ class LCACalculation:
 
         elif waste_data['Metadata', 'Unit'] == 'm2':
             waste_treatment = waste_data['Impact categories'] * fraction  # pd.Series SingleIndex
+
+        elif waste_data['Metadata', 'Unit'] == 'pcs':  # for HVAC systems
+            if n_units is None:
+                raise UnitOfMeasurementError('Please provide number of units for material: {mat}'.format(mat=material))
+            waste_treatment = waste_data['Impact categories'] * n_units * fraction  # pd.Series SingleIndex
 
         else:
             message = 'Unit of material in model does not match the unit of waste_treatment in impact data:\n'
@@ -732,15 +809,16 @@ class LCACalculation:
 
         return waste_treatment
 
-    def __operation(self, energy_source: str, energy_demand: float) -> pd.Series:
+    def __operation(self, energy_source: str, energy_demand: float, dt: Union[str, float] = 'timeless') -> pd.Series:
         """
         Function to calculate the impact of used energy
         :param energy_source: Name or DbId of the energy source
         :param energy_demand: Calculated energy demand in kWh
+        :param dt: time validity
         :return:
         """
         production_id = self.LifeCycleData.loc[energy_source, 'ProductionId']
-        impact_data = self.ImpactData.loc[production_id, :]  # pd.Series with MultiIndex
+        impact_data = self.get_dt_impact_data(production_id, dt)  # pd.Series with MultiIndex
 
         if impact_data['Metadata', 'Unit'] == 'MJ':
             impacts = impact_data['Impact categories'] * energy_demand * 3.6  # pd.Series SingleIndex
@@ -769,7 +847,7 @@ class LCACalculation:
         """
 
         # initiate the new result
-        impact_result = ImpactResult(basis_unit='m2')
+        impact_result = ImpactResult(basis_unit='m2', stages=['A1-3'], dt=[self.sdt])
 
         mat = getattr(material, self.match_prop)  # Name or DbId
         weight = material.Thickness * material.Density  # in kg (/m2)
@@ -777,52 +855,65 @@ class LCACalculation:
         cutting_waste = self.LifeCycleData.loc[mat, 'CuttingWaste']
 
         # Production
+        dt_prod = self.sdt
+
         production = self.__production(
             material=mat,
             weight=weight,
             volume=volume,
-            fraction=1 + cutting_waste
+            fraction=1 + cutting_waste,
+            dt=dt_prod
         )
         production_waste = self.__waste_treatment(
             material=mat,
             weight=weight,
             volume=volume,
-            fraction=cutting_waste
+            fraction=cutting_waste,
+            dt=dt_prod
         )
-        impact_result.impacts.loc[:, 'A1-3'] = production
-        impact_result.impacts.loc[:, 'A5'] = production_waste
+        impact_result.impacts.loc[:, (dt_prod, 'A1-3')] = production
+        impact_result.impacts.loc[:, (dt_prod, 'A5')] = production_waste
 
         # Transport
         transport_id = self.LifeCycleData.loc[mat, 'TransportId']
         transport = self.__transport(
             transport=transport_id,
-            weight=weight * (1 + cutting_waste)
+            weight=weight * (1 + cutting_waste),
+            dt=dt_prod
         )
-        impact_result.impacts.loc[:, 'A4'] = transport
+        impact_result.impacts.loc[:, (dt_prod, 'A4')] = transport
 
         # Replacement
         if life_time_overwrites is not None and mat in life_time_overwrites:
             life_time = life_time_overwrites[mat]
         else:
             life_time = self.LifeCycleData.loc[mat, 'LifeTime']
-        replacement = self.__replacement(
-            material=mat,
-            life_time=life_time,
-            weight=weight,
-            volume=volume,
-            fraction=1 + cutting_waste
-        )
-        # here we could specify if only a part of it is replaced by fraction=replace_fraction * (1 + cutting_waste)
-        impact_result.impacts.loc[:, 'B4'] = replacement
+
+        dt_rep = self.sdt + life_time
+        while dt_rep < dt_prod + self.rsp:
+
+            replacement = self.__replacement(
+                material=mat,
+                weight=weight,
+                volume=volume,
+                fraction=1 + cutting_waste,
+                dt=dt_rep
+            )
+            # here we could specify if only a part of it is replaced by fraction=replace_fraction * (1 + cutting_waste)
+            impact_result.impacts.loc[:, (dt_rep, 'B4')] = replacement
+
+            dt_rep += life_time
 
         # End of Life
+        dt_end = dt_prod + self.rsp
         waste_treatment = self.__waste_treatment(
             material=mat,
             weight=weight,
             volume=volume,
-            fraction=1  # cutting waste treated as production waste, replaced material in replacement
+            fraction=1,  # cutting waste treated as production waste, replaced material in replacement
+            dt=dt_end
         )
-        impact_result.impacts.loc[:, 'C1-4'] = waste_treatment
+        impact_result.impacts.loc[:, (dt_end, 'C1-4')] = waste_treatment
 
         # Add the result to the collection of results
         self.impact_results[material.IuId] = impact_result
@@ -838,7 +929,7 @@ class LCACalculation:
         """
 
         # initiate the new result
-        impact_result = ImpactResult(basis_unit='m2')
+        impact_result = ImpactResult(basis_unit='m2', stages=['A1-3'], dt=[self.sdt])
 
         mat = getattr(window_material, self.match_prop)  # Name or DbId
 
@@ -846,45 +937,58 @@ class LCACalculation:
         weight = self.LifeCycleData.loc[mat, 'SurfaceWeight']  # kg/m2
 
         # Production
+        dt_prod = self.sdt
+
         production = self.__production(
             material=mat,
             weight=weight,
-            fraction=1 + cutting_waste
+            fraction=1 + cutting_waste,
+            dt=dt_prod
         )
         production_waste = self.__waste_treatment(
             material=mat,
             weight=weight,
-            fraction=cutting_waste
+            fraction=cutting_waste,
+            dt=dt_prod
         )
-        impact_result.impacts.loc[:, 'A1-3'] = production
-        impact_result.impacts.loc[:, 'A5'] = production_waste
+        impact_result.impacts.loc[:, (dt_prod, 'A1-3')] = production
+        impact_result.impacts.loc[:, (dt_prod, 'A5')] = production_waste
 
         # Transport
         transport_id = self.LifeCycleData.loc[mat, 'TransportId']
         transport = self.__transport(
             transport=transport_id,
-            weight=weight * (1 + cutting_waste)
+            weight=weight * (1 + cutting_waste),
+            dt=dt_prod
         )
-        impact_result.impacts.loc[:, 'A4'] = transport
+        impact_result.impacts.loc[:, (dt_prod, 'A4')] = transport
 
         # Replacement
         life_time = self.LifeCycleData.loc[mat, 'LifeTime']
-        replacement = self.__replacement(
-            material=mat,
-            life_time=life_time,
-            weight=weight,
-            fraction=1 + cutting_waste
-        )
-        # here we could specify if only a part of it is replaced by fraction=replace_fraction * (1 + cutting_waste)
-        impact_result.impacts.loc[:, 'B4'] = replacement
+
+        dt_rep = self.sdt + life_time
+        while dt_rep < dt_prod + self.rsp:
+
+            replacement = self.__replacement(
+                material=mat,
+                weight=weight,
+                fraction=1 + cutting_waste,
+                dt=dt_rep
+            )
+            # here we could specify if only a part of it is replaced by fraction=replace_fraction * (1 + cutting_waste)
+            impact_result.impacts.loc[:, (dt_rep, 'B4')] = replacement
+
+            dt_rep += life_time
 
         # End of Life
+        dt_end = dt_prod + self.rsp
         waste_treatment = self.__waste_treatment(
             material=mat,
             weight=weight,
-            fraction=1  # cutting waste treated as production waste, replaced material in replacement
+            fraction=1,  # cutting waste treated as production waste, replaced material in replacement
+            dt=dt_end
         )
-        impact_result.impacts.loc[:, 'C1-4'] = waste_treatment
+        impact_result.impacts.loc[:, (dt_end, 'C1-4')] = waste_treatment
 
         # Add the result to the collection of results
         self.impact_results[window_material.IuId] = impact_result
@@ -899,7 +1003,7 @@ class LCACalculation:
         :return:
         """
         # initiate the new result
-        impact_result = ImpactResult(basis_unit='m2')
+        impact_result = ImpactResult(basis_unit='m2', stages=['A1-3'], dt=[self.sdt])
 
         mat = getattr(material, self.match_prop)  # Name or DbId
 
@@ -916,49 +1020,62 @@ class LCACalculation:
         cutting_waste = self.LifeCycleData.loc[mat, 'CuttingWaste']
 
         # Production
+        dt_prod = self.sdt
+
         production = self.__production(
             material=mat,
             weight=weight,
             volume=volume,
-            fraction=1 + cutting_waste
+            fraction=1 + cutting_waste,
+            dt=dt_prod
         )
         production_waste = self.__waste_treatment(
             material=mat,
             weight=weight,
             volume=volume,
-            fraction=cutting_waste
+            fraction=cutting_waste,
+            dt=dt_prod
         )
-        impact_result.impacts.loc[:, 'A1-3'] = production
-        impact_result.impacts.loc[:, 'A5'] = production_waste
+        impact_result.impacts.loc[:, (dt_prod, 'A1-3')] = production
+        impact_result.impacts.loc[:, (dt_prod, 'A5')] = production_waste
 
         # Transport
         transport_id = self.LifeCycleData.loc[mat, 'TransportId']
         transport = self.__transport(
             transport=transport_id,
-            weight=weight * (1 + cutting_waste)
+            weight=weight * (1 + cutting_waste),
+            dt=dt_prod
         )
-        impact_result.impacts.loc[:, 'A4'] = transport
+        impact_result.impacts.loc[:, (dt_prod, 'A4')] = transport
 
         # Replacement
         life_time = self.LifeCycleData.loc[mat, 'LifeTime']
-        replacement = self.__replacement(
-            material=mat,
-            life_time=life_time,
-            weight=weight,
-            volume=volume,
-            fraction=1 + cutting_waste
-        )
-        # here we could specify if only a part of it is replaced by fraction=replace_fraction * (1 + cutting_waste)
-        impact_result.impacts.loc[:, 'B4'] = replacement
+
+        dt_rep = self.sdt + life_time
+        while dt_rep < dt_prod + self.rsp:
+
+            replacement = self.__replacement(
+                material=mat,
+                weight=weight,
+                volume=volume,
+                fraction=1 + cutting_waste,
+                dt=dt_rep
+            )
+            # here we could specify if only a part of it is replaced by fraction=replace_fraction * (1 + cutting_waste)
+            impact_result.impacts.loc[:, (dt_rep, 'B4')] = replacement
+
+            dt_rep += life_time
 
         # End of Life
+        dt_end = dt_prod + self.rsp
         waste_treatment = self.__waste_treatment(
             material=mat,
             weight=weight,
             volume=volume,
-            fraction=1  # cutting waste treated as production waste, replaced material in replacement
+            fraction=1,  # cutting waste treated as production waste, replaced material in replacement
+            dt=dt_end
         )
-        impact_result.impacts.loc[:, 'C1-4'] = waste_treatment
+        impact_result.impacts.loc[:, (dt_end, 'C1-4')] = waste_treatment
 
         # Add the result to the collection of results
         self.impact_results[material.IuId] = impact_result
@@ -973,7 +1090,7 @@ class LCACalculation:
         :return:
         """
         # Initiate impact result
-        impact_result = ImpactResult(basis_unit='m2')  # of window area
+        impact_result = ImpactResult(basis_unit='m2', stages=['A1-3'], dt=[self.sdt])  # of window area
 
         if shading.Material is not None:
             # Get material object from library
@@ -983,7 +1100,8 @@ class LCACalculation:
             material_impact = self.calculate_impact(material)
 
             # calculate to window m2
-            m2_impact = material_impact.impacts.mul(material.area_per_window_m2())
+            m2_impact = material_impact * material.area_per_window_m2()
+            m2_impact.BasisUnit = 'm2'  # of window area
 
         elif shading.Construction is not None:
             # Get construction object from library
@@ -991,12 +1109,13 @@ class LCACalculation:
 
             # calculate the impact of the construction
             m2_impact = self.calculate_impact(construction, library, typ='shading')
+            m2_impact.BasisUnit = 'm2'  # of window area
             # impact is calculated for window m2 in construction
         else:
             raise Exception('Neither shading construction, nor shading material is defined: {n}'.format(n=shading.Name))
 
         # add the impact to the shading
-        impact_result.impacts = impact_result.impacts.add(m2_impact.impacts, fill_value=0)
+        impact_result += m2_impact
 
         self.impact_results[shading.IuId] = impact_result
 
@@ -1027,11 +1146,12 @@ class LCACalculation:
             # nothing to evaluate
             return life_times
 
-        # reverse order an collect name (or dbid)
+        # reverse order and collect name (or dbid)
         layers_rev = [mat for mat in layers[::-1]]
         for inner, outer in zip(layers_rev[1:], layers_rev[2:]):
             # changes made from the second innermost layer
             if life_times[inner] < life_times[outer]:
+                # TODO increases lifetime of hidden layers!
                 life_times[inner] = life_times[outer]
         return life_times
 
@@ -1045,7 +1165,7 @@ class LCACalculation:
         :return:
         """
         # Initiate impact result
-        impact_result = ImpactResult(basis_unit='m2')
+        impact_result = ImpactResult(basis_unit='m2', stages=['A1-3'], dt=[self.sdt])
 
         if typ == 'opaque':
             # check lifetimes based on layer order
@@ -1060,7 +1180,7 @@ class LCACalculation:
                 material_impact = self.calculate_impact(material, life_time_overwrites=life_times)
 
                 # add the impact to the construction impact
-                impact_result.impacts = impact_result.impacts.add(material_impact.impacts, fill_value=0)
+                impact_result += material_impact
 
         elif typ == 'window':
             for layer in construction.Layers:
@@ -1072,7 +1192,7 @@ class LCACalculation:
                 material_impact = self.calculate_impact(material)
 
                 # add the impact to the construction impact
-                impact_result.impacts = impact_result.impacts.add(material_impact.impacts, fill_value=0)
+                impact_result += material_impact
 
         elif typ == 'shading':
             for layer in construction.Layers:
@@ -1085,8 +1205,9 @@ class LCACalculation:
                     material_impact = self.calculate_impact(material)
 
                     # calculate impact based on window m2 and add the impact to the construction impact
-                    impact_per_m2 = material_impact.impacts.mul(material.area_per_window_m2())
-                    impact_result.impacts = impact_result.impacts.add(impact_per_m2, fill_value=0)
+                    impact_per_m2 = material_impact * material.area_per_window_m2()
+                    impact_per_m2.BasisUnit = 'm2'  # of window area
+                    impact_result += impact_per_m2
 
         else:
             raise Exception('Invalid construction impact calculation type: {t}'.format(t=typ))
@@ -1104,21 +1225,23 @@ class LCACalculation:
         :return:
         """
         # Initiate impact result
-        impact_result = ImpactResult(basis_unit='total')
+        impact_result = ImpactResult(basis_unit='total', stages=['A1-3'], dt=[self.sdt])
 
         # Add impact of all windows to the total
         for window in building_surface.Fenestration:
             window_impact = self.calculate_impact(window, library)
-            impact_result.impacts = impact_result.impacts.add(window_impact.impacts, fill_value=0)
+            impact_result += window_impact
 
         # Get construction of the surface
         construction = library.get(building_surface.Construction)
         construction_impact = self.calculate_impact(construction, library, typ='opaque')
 
         # Add impact of opaque surface to the total (excluding windows)
-        opaque_impact = construction_impact.impacts.mul(building_surface.area_net() * 1.15)
+        opaque_impact = construction_impact * building_surface.area_net() * 1.15
         # TODO multiplication with 1.15 to include materials at junctions (inside reference surface)
-        impact_result.impacts = impact_result.impacts.add(opaque_impact, fill_value=0)
+        opaque_impact.BasisUnit = 'total'
+
+        impact_result += opaque_impact
 
         self.impact_results[building_surface.IuId] = impact_result
 
@@ -1146,7 +1269,7 @@ class LCACalculation:
         # In the future separate glazing and frame
 
         # Initiate impact result
-        impact_result = ImpactResult(basis_unit='total')
+        impact_result = ImpactResult(basis_unit='total', stages=['A1-3'], dt=[self.sdt])
 
         if fenestration_surface.Shading is not None:
             # Get shading of the window
@@ -1154,8 +1277,9 @@ class LCACalculation:
             shading_impact = self.calculate_impact(shading, library)
 
             # Add impact of shading to the total
-            shading_total_impact = shading_impact.impacts.mul(fenestration_surface.area())
-            impact_result.impacts = impact_result.impacts.add(shading_total_impact, fill_value=0)
+            shading_total_impact = shading_impact * fenestration_surface.area()
+            shading_total_impact.BasisUnit = 'total'
+            impact_result += shading_total_impact
 
         # Get construction of the surface
         construction = library.get(fenestration_surface.Construction)
@@ -1164,8 +1288,10 @@ class LCACalculation:
         # Add impact of window surface to the total
         # TODO from old calculation if frame and glazing defined separately:
         # window_lca = (glazing_lca * window.glazing_area() + frame_lca * window.frame_area()) / window.area()
-        window_impact = construction_impact.impacts.mul(fenestration_surface.area())
-        impact_result.impacts = impact_result.impacts.add(window_impact, fill_value=0)
+        window_impact = construction_impact * fenestration_surface.area()
+        window_impact.BasisUnit = 'total'
+
+        impact_result += window_impact
 
         self.impact_results[fenestration_surface.IuId] = impact_result
 
@@ -1180,15 +1306,17 @@ class LCACalculation:
         :return:
         """
         # Initiate impact result
-        impact_result = ImpactResult(basis_unit='total')
+        impact_result = ImpactResult(basis_unit='total', stages=['A1-3'], dt=[self.sdt])
 
         # Get construction of the surface
         construction = library.get(non_zone_surface.Construction)
         construction_impact = self.calculate_impact(construction, library, typ='opaque')
 
         # Calculate impact of the total area
-        surface_impact = construction_impact.impacts.mul(non_zone_surface.area())
-        impact_result.impacts = impact_result.impacts.add(surface_impact, fill_value=0)
+        surface_impact = construction_impact * non_zone_surface.area()
+        surface_impact.BasisUnit = 'total'
+
+        impact_result += surface_impact
 
         self.impact_results[non_zone_surface.IuId] = impact_result
 
@@ -1203,15 +1331,17 @@ class LCACalculation:
         :return:
         """
         # Initiate impact result
-        impact_result = ImpactResult(basis_unit='total')
+        impact_result = ImpactResult(basis_unit='total', stages=['A1-3'], dt=[self.sdt])
 
         # Get construction of the surface
         construction = library.get(internal_mass.Construction)
         construction_impact = self.calculate_impact(construction, library, typ='opaque')
 
         # Calculate impact of the total area
-        mass_impact = construction_impact.impacts.mul(internal_mass.Area)
-        impact_result.impacts = impact_result.impacts.add(mass_impact, fill_value=0)
+        mass_impact = construction_impact * internal_mass.Area
+        mass_impact.BasisUnit = 'total'
+
+        impact_result += mass_impact
 
         self.impact_results[internal_mass.IuId] = impact_result
 
@@ -1225,7 +1355,7 @@ class LCACalculation:
         :return:
         """
         # Initiate impact result
-        impact_result = ImpactResult(basis_unit='total')
+        impact_result = ImpactResult(basis_unit='total', stages=['A1-3'], dt=[self.sdt])
 
         # add impact of all surfaces
         for surface in zone.BuildingSurfaces:
@@ -1234,7 +1364,7 @@ class LCACalculation:
             surface_impact = self.calculate_impact(surface, library)
 
             # add the impact to the zone impact
-            impact_result.impacts = impact_result.impacts.add(surface_impact.impacts, fill_value=0)
+            impact_result += surface_impact
 
         # add impact of all internal masses
         for mass in zone.InternalMasses:
@@ -1242,7 +1372,7 @@ class LCACalculation:
             mass_impact = self.calculate_impact(mass, library)
 
             # add the impact to the zone impact
-            impact_result.impacts = impact_result.impacts.add(mass_impact.impacts, fill_value=0)
+            impact_result += mass_impact
 
         self.impact_results[zone.IuId] = impact_result
 
@@ -1258,7 +1388,7 @@ class LCACalculation:
         :return:
         """
         # Initiate impact result
-        impact_result = ImpactResult(basis_unit='total')
+        impact_result = ImpactResult(basis_unit='total', stages=['A1-3'], dt=[self.sdt])
 
         library = building.Library
 
@@ -1269,7 +1399,7 @@ class LCACalculation:
             zone_impact = self.calculate_impact(zone, library)
 
             # add the impact to the building impact
-            impact_result.impacts = impact_result.impacts.add(zone_impact.impacts, fill_value=0)
+            impact_result += zone_impact
 
         # add impact of all non-zone surfaces
         for surface in building.NonZoneSurfaces:
@@ -1278,13 +1408,13 @@ class LCACalculation:
             surface_impact = self.calculate_impact(surface, library)
 
             # add the impact to the building impact
-            impact_result.impacts = impact_result.impacts.add(surface_impact.impacts, fill_value=0)
+            impact_result += surface_impact
 
         # add impact of operation
         operation_impact = self.calculate_impact(building.HVAC, demands=demands)
 
         # add the hvac impact to the building impact
-        impact_result.impacts = impact_result.impacts.add(operation_impact.impacts, fill_value=0)
+        impact_result += operation_impact
 
         self.impact_results[building.IuId] = impact_result
 
@@ -1292,23 +1422,100 @@ class LCACalculation:
 
     def __heating(self, heating: firepy.model.hvac.Heating, heating_demand: float) -> impact_results:
         """
-        Impact refers to one year
+        Impact refers to total RSP
         :param heating:
         :param heating_demand: Net value of heating demand in kWh/year
         :return:
         """
         # Initiate impact result
-        impact_result = ImpactResult(basis_unit='year')
+        impact_result = ImpactResult(basis_unit='total', stages=['A1-3'], dt=[self.sdt])
         energy_source = heating.energy_source  # Name or DbId
+        aux_energy_source = heating.aux_energy_source
         yearly_demand = heating_demand / heating.efficiency  # gross demand
+        aux_demand = heating_demand * heating.aux_energy_rate
+
+        system = getattr(heating, self.match_prop)  # Name or DbId
+        cutting_waste = self.LifeCycleData.loc[system, 'CuttingWaste']
+        weight = self.LifeCycleData.loc[system, 'Weight']  # kg/pcs.
+        n_units = heating.n_units  # pcs.
 
         # Operation
-        operation = self.__operation(
-            energy_source=energy_source,
-            energy_demand=yearly_demand
-        )
+        dt_op = self.sdt
+        while dt_op < self.sdt + self.rsp:
 
-        impact_result.impacts.loc[:, 'B6'] = operation
+            operation = self.__operation(
+                energy_source=energy_source,
+                energy_demand=yearly_demand,
+                dt=dt_op
+            )
+            if aux_energy_source is not None:
+                operation_aux = self.__operation(
+                    energy_source=aux_energy_source,
+                    energy_demand=aux_demand,
+                    dt=dt_op
+                )
+            else:
+                operation_aux = 0
+            impact_result.impacts.loc[:, (dt_op, 'B6')] = operation.add(operation_aux)
+
+            dt_op += 1
+
+        # Production
+        dt_prod = self.sdt
+        production = self.__production(
+            material=system,
+            weight=weight,
+            n_units=n_units,
+            fraction=1 + cutting_waste,
+            dt=dt_prod
+        )
+        production_waste = self.__waste_treatment(
+            material=system,
+            weight=weight,
+            n_units=n_units,
+            fraction=cutting_waste,
+            dt=dt_prod
+        )
+        impact_result.impacts.loc[:, (dt_prod, 'A1-3')] = production
+        impact_result.impacts.loc[:, (dt_prod, 'A5')] = production_waste
+
+        # Transport
+        transport_id = self.LifeCycleData.loc[system, 'TransportId']
+        transport = self.__transport(
+            transport=transport_id,
+            weight=weight * (1 + cutting_waste),
+            dt=dt_prod
+        )
+        impact_result.impacts.loc[:, (dt_prod, 'A4')] = transport
+
+        # Replacement
+        life_time = self.LifeCycleData.loc[system, 'LifeTime']
+
+        dt_rep = self.sdt + life_time
+        while dt_rep < dt_prod + self.rsp:
+
+            replacement = self.__replacement(
+                material=system,
+                weight=weight,
+                n_units=n_units,
+                fraction=1 + cutting_waste,
+                dt=dt_rep
+            )
+            # here we could specify if only a part of it is replaced by fraction=replace_fraction * (1 + cutting_waste)
+            impact_result.impacts.loc[:, (dt_rep, 'B4')] = replacement
+
+            dt_rep += life_time
+
+        # End of Life
+        dt_end = dt_prod + self.rsp
+        waste_treatment = self.__waste_treatment(
+            material=system,
+            weight=weight,
+            n_units=n_units,
+            fraction=1,  # cutting waste treated as production waste, replaced material in replacement
+            dt=dt_end
+        )
+        impact_result.impacts.loc[:, (dt_end, 'C1-4')] = waste_treatment
 
         # Add the result to the collection of results
         self.impact_results[heating.IuId] = impact_result
@@ -1317,23 +1524,91 @@ class LCACalculation:
 
     def __cooling(self, cooling: firepy.model.hvac.Cooling, cooling_demand: float) -> impact_results:
         """
-        Impact refers to one year
+        Impact refers to total RSP
         :param cooling:
         :param cooling_demand: Net value of cooling demand in kWh/year
         :return:
         """
         # Initiate impact result
-        impact_result = ImpactResult(basis_unit='year')
+        impact_result = ImpactResult(basis_unit='total', stages=['A1-3'], dt=[self.sdt])
         energy_source = cooling.energy_source  # Name or DbId
         yearly_demand = cooling_demand / cooling.efficiency  # gross demand
 
-        # Operation
-        operation = self.__operation(
-            energy_source=energy_source,
-            energy_demand=yearly_demand
-        )
+        system = getattr(cooling, self.match_prop)  # Name or DbId
+        cutting_waste = self.LifeCycleData.loc[system, 'CuttingWaste']
+        weight = self.LifeCycleData.loc[system, 'Weight']  # kg/pcs.
+        n_units = cooling.n_units  # pcs.
 
-        impact_result.impacts.loc[:, 'B6'] = operation
+        # Operation
+        dt_op = self.sdt
+        while dt_op < self.sdt + self.rsp:
+
+            operation = self.__operation(
+                energy_source=energy_source,
+                energy_demand=yearly_demand,
+                dt=dt_op
+            )
+
+            impact_result.impacts.loc[:, (dt_op, 'B6')] = operation
+
+            dt_op += 1
+
+        # Production
+        dt_prod = self.sdt
+        production = self.__production(
+            material=system,
+            weight=weight,
+            n_units=n_units,
+            fraction=1 + cutting_waste,
+            dt=dt_prod
+        )
+        production_waste = self.__waste_treatment(
+            material=system,
+            weight=weight,
+            n_units=n_units,
+            fraction=cutting_waste,
+            dt=dt_prod
+        )
+        impact_result.impacts.loc[:, (dt_prod, 'A1-3')] = production
+        impact_result.impacts.loc[:, (dt_prod, 'A5')] = production_waste
+
+        # Transport
+        transport_id = self.LifeCycleData.loc[system, 'TransportId']
+        transport = self.__transport(
+            transport=transport_id,
+            weight=weight * (1 + cutting_waste),
+            dt=dt_prod
+        )
+        impact_result.impacts.loc[:, (dt_prod, 'A4')] = transport
+
+        # Replacement
+        life_time = self.LifeCycleData.loc[system, 'LifeTime']
+
+        dt_rep = self.sdt + life_time
+        while dt_rep < dt_prod + self.rsp:
+
+            replacement = self.__replacement(
+                material=system,
+                weight=weight,
+                n_units=n_units,
+                fraction=1 + cutting_waste,
+                dt=dt_rep
+            )
+            # here we could specify if only a part of it is replaced by fraction=replace_fraction * (1 + cutting_waste)
+            impact_result.impacts.loc[:, (dt_rep, 'B4')] = replacement
+
+            dt_rep += life_time
+
+        # End of Life
+        dt_end = dt_prod + self.rsp
+        waste_treatment = self.__waste_treatment(
+            material=system,
+            weight=weight,
+            n_units=n_units,
+            fraction=1,  # cutting waste treated as production waste, replaced material in replacement
+            dt=dt_end
+        )
+        impact_result.impacts.loc[:, (dt_end, 'C1-4')] = waste_treatment
 
         # Add the result to the collection of results
         self.impact_results[cooling.IuId] = impact_result
@@ -1342,23 +1617,91 @@ class LCACalculation:
 
     def __lighting(self, lighting: firepy.model.hvac.Lighting, lighting_energy: float) -> impact_results:
         """
-        Impact refers to one year
+        Impact refers to total RSP
         :param lighting:
         :param lighting_energy: Total lighting (electric) energy in kWh/year
         :return:
         """
         # Initiate impact result
-        impact_result = ImpactResult(basis_unit='year')
+        impact_result = ImpactResult(basis_unit='total', stages=['A1-3'], dt=[self.sdt])
         energy_source = lighting.energy_source  # Name or DbId
         yearly_demand = lighting_energy * lighting.inefficiency  # gross demand
 
-        # Operation
-        operation = self.__operation(
-            energy_source=energy_source,
-            energy_demand=yearly_demand
-        )
+        system = getattr(lighting, self.match_prop)  # Name or DbId
+        cutting_waste = self.LifeCycleData.loc[system, 'CuttingWaste']
+        weight = self.LifeCycleData.loc[system, 'Weight']  # kg/pcs.
+        n_units = lighting.n_units  # pcs.
 
-        impact_result.impacts.loc[:, 'B6'] = operation
+        # Operation
+        dt_op = self.sdt
+        while dt_op < self.sdt + self.rsp:
+
+            operation = self.__operation(
+                energy_source=energy_source,
+                energy_demand=yearly_demand,
+                dt=dt_op
+            )
+
+            impact_result.impacts.loc[:, (dt_op, 'B6')] = operation
+
+            dt_op += 1
+
+        # Production
+        dt_prod = self.sdt
+        production = self.__production(
+            material=system,
+            weight=weight,
+            n_units=n_units,
+            fraction=1 + cutting_waste,
+            dt=dt_prod
+        )
+        production_waste = self.__waste_treatment(
+            material=system,
+            weight=weight,
+            n_units=n_units,
+            fraction=cutting_waste,
+            dt=dt_prod
+        )
+        impact_result.impacts.loc[:, (dt_prod, 'A1-3')] = production
+        impact_result.impacts.loc[:, (dt_prod, 'A5')] = production_waste
+
+        # Transport
+        transport_id = self.LifeCycleData.loc[system, 'TransportId']
+        transport = self.__transport(
+            transport=transport_id,
+            weight=weight * (1 + cutting_waste),
+            dt=dt_prod
+        )
+        impact_result.impacts.loc[:, (dt_prod, 'A4')] = transport
+
+        # Replacement
+        life_time = self.LifeCycleData.loc[system, 'LifeTime']
+
+        dt_rep = self.sdt + life_time
+        while dt_rep < dt_prod + self.rsp:
+
+            replacement = self.__replacement(
+                material=system,
+                weight=weight,
+                n_units=n_units,
+                fraction=1 + cutting_waste,
+                dt=dt_rep
+            )
+            # here we could specify if only a part of it is replaced by fraction=replace_fraction * (1 + cutting_waste)
+            impact_result.impacts.loc[:, (dt_rep, 'B4')] = replacement
+
+            dt_rep += life_time
+
+        # End of Life
+        dt_end = dt_prod + self.rsp
+        waste_treatment = self.__waste_treatment(
+            material=system,
+            weight=weight,
+            n_units=n_units,
+            fraction=1,  # cutting waste treated as production waste, replaced material in replacement
+            dt=dt_end
+        )
+        impact_result.impacts.loc[:, (dt_end, 'C1-4')] = waste_treatment
 
         # Add the result to the collection of results
         self.impact_results[lighting.IuId] = impact_result
@@ -1375,7 +1718,7 @@ class LCACalculation:
         :return:
         """
         # Initiate impact result
-        impact_result = ImpactResult(basis_unit='total')
+        impact_result = ImpactResult(basis_unit='total', stages=['A1-3'], dt=[self.sdt])
 
         # Yearly impact of heating and cooling
         heating_demand = abs(demands.loc[:, 'heating'].sum())
@@ -1387,9 +1730,9 @@ class LCACalculation:
         lighting_impact = self.calculate_impact(hvac.Lighting, lighting_energy=lighting_energy)
 
         # Add impact to the total
-        impact_result.impacts = impact_result.impacts.add(heating_impact.impacts.mul(self.rsp), fill_value=0)
-        impact_result.impacts = impact_result.impacts.add(cooling_impact.impacts.mul(self.rsp), fill_value=0)
-        impact_result.impacts = impact_result.impacts.add(lighting_impact.impacts.mul(self.rsp), fill_value=0)
+        impact_result += heating_impact
+        impact_result += cooling_impact
+        impact_result += lighting_impact
 
         # Add the result to the collection of results
         self.impact_results[hvac.IuId] = impact_result
@@ -1582,13 +1925,15 @@ class OpenLCAIpc:
         backup.name = backup.name + ' backup'
         self.client.insert(backup)
 
-    def localize_product_system(self, new_location: str, system_ref: olca.Ref = None, system_name: str = None,
-                                system_id: str = None) -> str:
+    def localize_product_system(self, new_location: str, year: int = None,
+                                system_ref: olca.Ref = None, system_name: str = None, system_id: str = None) -> str:
         """
         Update product system with the energy changes described in the energy_update_data
 
-        :param new_location: OpenLCA country code of the new location that must be used in the
+        :param new_location: OpenLCA country code of the new location - must be used in the
             Energy Updates Data ("Location new" column)
+        :param year: adaptation year of the product system - must be used in the
+            Energy Updates Data ("Year" column)
         :param system_ref: olca Ref to product system
         :param system_name: name of the product system in the database
         :param system_id: id of the product system in the database
@@ -1611,22 +1956,103 @@ class OpenLCAIpc:
 
         original_location = system.reference_process.location
 
-        logger.info('Localizing product system: {sn} - {loc} -> {nloc}'.format(sn=system.name,
-                                                                               loc=original_location,
-                                                                               nloc=new_location))
+        if year is None:
+            year_text = 'timeless'
+        else:
+            year_text = year
+
+        # check if it needs localization
+        logger.debug('Checking system localization')
+        adaptation_text = ' - {l} {y}'.format(l=new_location, y=year_text)
+        localized = False
+        if original_location == new_location:
+            logger.debug('System is a local system')
+            if year is None:
+                localized = True
+            elif adaptation_text in system.name:
+                logger.debug('System already adapted to: {l} {y}'.format(l=new_location, y=year_text))
+                localized = True
+        elif adaptation_text in system.name:
+            logger.debug('System already adapted to: {loc} {y}'.format(loc=new_location, y=year))
+            localized = True
+
+        if localized:
+            if adaptation_text not in system.name:
+                system.name = system.name + adaptation_text
+                logger.info('Updating product system name in OpenLCA')
+                self.client.update(system)
+            return system.id
+
+        # continue if we really need adaptation
+        message = 'Adapting product system: {sn} - {loc} -> {nloc} ({y})'.format(sn=system.name,
+                                                                                 loc=original_location,
+                                                                                 nloc=new_location,
+                                                                                 y=year_text)
+        logger.info(message)
 
         if self.energy_updates_data is None:
             raise Exception('Please set energy_updates_data attribute first before running localization')
 
-        # select rows corresponding the new location
-        energy_updates = self.energy_updates_data[self.energy_updates_data['Location new'] == new_location]
+        # select rows corresponding the new location and year
+        location_filter = self.energy_updates_data['Location new'] == new_location
+        if year is not None:
+            year_filter = self.energy_updates_data['Year'].astype('float') == float(year)
+        else:
+            year_filter = self.energy_updates_data['Year'].isna()
+        energy_updates = self.energy_updates_data[location_filter & year_filter]
 
         if original_location not in energy_updates.columns:
-            message = 'Cannot update product system of original location: {loc}'.format(loc=original_location)
+            message = 'Cannot update product system of original location: {loc} and year: {y}'.format(
+                loc=original_location, y=year_text)
             message += ' Please provide data for the location in the energy_updates_data'
             raise Exception(message)
 
         updates = energy_updates[energy_updates[original_location] == 'update'].index.values
+        logger.debug('Number of updates: {n}'.format(n=len(updates)))
+
+        def add_process(process: olca.Process):
+            """
+            helper function to add a process and its process links to the product system
+            # TODO this is very nice, but failed to produce a valid product system that can be calculated!
+            """
+
+            logger.debug('    Checking for new process in systems processes: {n}'.format(n=process.name))
+
+            sys_process_ids = [proc.id for proc in system.processes]
+            if process.id in sys_process_ids:
+                logger.debug('    Process found')
+            else:
+                # we still don't know if the upstream processes of the newly added process are contained
+                # in the product system or not, practically we'd need to rebuild the system
+                # so instead we use recursion here below! :-)
+
+                # add the process to the system
+                logger.debug('    Adding process to systems processes')
+                process_new_ref = olca.ProcessRef()
+                process_new_ref.id = process.id
+                process_new_ref.name = process.name
+                process_new_ref.category_path = process.category.category_path + [process.category.name]
+                process_new_ref.location = process.location.code
+                process_new_ref.process_type = process.process_type
+                system.processes.append(process_new_ref)
+
+                # we need to add all the new process links from this new process
+                logger.debug('    Adding exchanges to systems process_links')
+                for exchange in process.exchanges:
+                    if exchange.input and exchange.flow.flow_type == olca.FlowType.PRODUCT_FLOW:
+                        # create new process_link
+                        new_link = olca.ProcessLink()
+                        new_link.provider = exchange.default_provider
+                        new_link.flow = exchange.flow
+                        new_link.process = process_new_ref
+                        new_link.exchange = exchange
+                        # add new link to system
+                        system.process_links.append(new_link)
+
+                        # check default provider and add to system:
+                        prov = self.client.get(olca.Process, exchange.default_provider.id)
+                        add_process(prov)
+
         for change_code in updates:
 
             process_old_id = energy_updates.loc[change_code, 'ID old']
@@ -1635,30 +2061,21 @@ class OpenLCAIpc:
             process_new_id = energy_updates.loc[change_code, 'ID new']
             process_new_loc = energy_updates.loc[change_code, 'Location new']
 
-            logger.debug('    Updating: {name} - {loc} -> {nloc}'.format(name=process_old_name,
-                                                                         loc=process_old_loc,
-                                                                         nloc=process_new_loc))
+            message = '    Updating: {name} - {loc} -> {nloc} ({y})'.format(name=process_old_name,
+                                                                            loc=process_old_loc,
+                                                                            nloc=process_new_loc,
+                                                                            y=year_text)
+            logger.debug(message)
+
             process_new = self.client.get(olca.Process, process_new_id)
 
-            logger.debug('    Checking for new process in systems processes')
-            sys_process_ids = [proc.id for proc in system.processes]
-            if process_new_id in sys_process_ids:
-                logger.debug('    Process found')
-            else:
-                logger.debug('    Adding process to systems processes')
-                process_new_ref = olca.ProcessRef
-                process_new_ref.id = process_new.id
-                process_new_ref.name = process_new.name
-                process_new_ref.category_path = process_new.category.category_path
-                process_new_ref.location = process_new.location
-                process_new_ref.process_type = olca.ProcessType.UNIT_PROCESS
-                system.processes.append(process_new_ref)
+            add_process(process_new)
 
             logger.debug('    Creating new provider from Process')
             new_provider = olca.Ref()
             new_provider.id = process_new.id
             new_provider.name = process_new.name
-            new_provider.category_path = process_new.category.category_path
+            new_provider.category_path = process_new.category.category_path + [process_new.category.name]
 
             logger.debug('    Finding process links (id: {id})'.format(id=process_old_id))
             for link in system.process_links:
@@ -1667,12 +2084,17 @@ class OpenLCAIpc:
                     link.provider = new_provider
 
         # log adaptation to product systems description
-        if system.description is not None:
-            system.description = new_location + ' adapted dataset - ' + system.description
-        else:
-            system.description = new_location + ' adapted dataset'
+        description_text = 'Adapted dataset: (location): {l} (year): {y} '.format(l=new_location, y=year_text)
 
-        system.name = system.name + ' - ' + new_location
+        if system.description is not None:
+            system.description = description_text + ' - ' + system.description
+        else:
+            system.description = description_text
+
+        # update the name of the system too
+        name_text = ' - {l} {y}'.format(l=new_location, y=year_text)
+
+        system.name = system.name + name_text
 
         logger.info('Updating product system in OpenLCA')
         self.client.update(system)
@@ -1709,7 +2131,7 @@ class OpenLCAIpc:
 
     def calculate_product_system(self, method: olca.ImpactMethod,
                                  system_ref: olca.Ref = None, system_name: str = None, system_id: str = None,
-                                 localization=None) -> pd.Series:
+                                 localization: str = None, year: int = None) -> pd.Series:
         """
         Calculate impacts of a product system with optional localization
 
@@ -1721,6 +2143,7 @@ class OpenLCAIpc:
         One of the above three is required - priority order is same as argument order
 
         :param localization: OpenLCA country code of the localization; if None, no localizations are made
+        :param year: year of adaptation, if None, "timeless" localization will be made
         :return: pandas Series with all impact categories
         """
 
@@ -1735,8 +2158,15 @@ class OpenLCAIpc:
         else:
             raise Exception('Please provide any of the following: system_ref / system_name / system_id')
 
+        if year is None:
+            year_text = 'timeless'
+            year_num = '-1'
+        else:
+            year_text = year
+            year_num = year
+
         # check existing result in database
-        table_name = self.db_name + '_' + method.id.replace('-', '_')
+        table_name = self.db_name + '_' + method.id.replace('-', '_') + '_res'
         query = 'SELECT * FROM {tbl}'.format(
             tbl=table_name,
         )
@@ -1748,17 +2178,19 @@ class OpenLCAIpc:
             sys_result = calculated_results[calculated_results['SystemId'] == system_id]
             if len(sys_result) > 0:
                 if localization is not None:
-                    # check only results with localization
-                    sys_result = sys_result[sys_result['Localization'] == localization]
-                    logger.debug('Number of localized systems found in database: {}'.format(len(sys_result)))
+                    location_text = localization
                 else:
-                    # check only results without localization
-                    sys_result = sys_result[sys_result['Localization'] == '-']
-                    logger.debug('Number of non-localized systems found in database: {}'.format(len(sys_result)))
+                    location_text = '-'
+                location_filter = sys_result['Localization'] == location_text
+                year_filter = sys_result['Year'] == year_num
+
+                sys_result = sys_result[location_filter & year_filter]
+                logger.debug('Number of systems found in database: {}'.format(len(sys_result)))
+
                 if len(sys_result) > 0:
                     logger.info('Calculation result found in database')
                     # return results without metadata
-                    meta = ['SystemId', 'SystemName', 'RefProcessId', 'RefProcessName', 'Localization']
+                    meta = ['SystemId', 'SystemName', 'RefProcessId', 'RefProcessName', 'Localization', 'Year']
                     result_df = sys_result.drop(columns=meta)
                     # if only one result is present, simplify to series, else it will return a DataFrame
                     result_series = result_df.squeeze()
@@ -1768,15 +2200,14 @@ class OpenLCAIpc:
         system = self.client.get(olca.ProductSystem, system_id)
 
         if localization is not None:
-            logger.debug('Checking system localization')
-            if system.reference_process.location == localization:
-                logger.debug('System is a local system')
-            elif system.description is not None:
-                if system.description.startswith(localization + ' adapted'):
-                    logger.debug('System already adapted to: {loc}'.format(loc=localization))
+            adaptation_text = ' - {loc} {y}'.format(loc=localization, y=year_text)
+
+            logger.debug('Checking system localization based on name')
+            if adaptation_text in system.name:
+                logger.debug('System already adapted to: {loc} {y}'.format(loc=localization, y=year))
             else:
-                logger.debug('Updating system: {sn} -> {l}'.format(sn=system.name, l=localization))
-                system_id = self.localize_product_system(new_location=localization, system_id=system_id)
+                logger.debug('Updating system: {sn} -> {lo} {y}'.format(sn=system.name, lo=localization, y=year_text))
+                system_id = self.localize_product_system(new_location=localization, system_id=system_id, year=year)
                 logger.debug('Reloading product system')
                 system = self.client.get(olca.ProductSystem, system_id)
 
@@ -1811,20 +2242,18 @@ class OpenLCAIpc:
             result_to_db['SystemName'] = system.name
             result_to_db['RefProcessId'] = system.reference_process.id
             result_to_db['RefProcessName'] = system.reference_process.name
-            if system.reference_process.location == localization:
-                result_to_db['Localization'] = localization
-            elif system.description is not None and system.description.startswith(localization + ' adapted'):
-                result_to_db['Localization'] = localization
-            else:
+            if localization is None:
                 result_to_db['Localization'] = '-'
+            else:
+                result_to_db['Localization'] = localization
+            result_to_db['Year'] = year_num
             result_frame = result_to_db.to_frame().transpose()
-            table_name = self.db_name + '_' + method.id.replace('-', '_')
             result_frame.to_sql(name=table_name, con=self.impact_db, if_exists='append', index=False)
 
         return result_series
 
     def create_product_system(self, process_ref: olca.ProcessRef = None, process_name: str = None,
-                              process_id: str = None, localization: str = None) -> str:
+                              process_id: str = None, localization: str = None, year: int = None) -> str:
         """
         Create product system from process
         :param process_ref: olca ProcessRef to process
@@ -1832,6 +2261,7 @@ class OpenLCAIpc:
         :param process_id: id of the process in the database
         One of the above three is required - priority order is same as argument order
         :param localization: OpenLCA country code of target localization (if any)
+        :param year: target year for adaptation (if any)
         :return: Product System Id
         """
         if process_ref is not None:
@@ -1852,21 +2282,27 @@ class OpenLCAIpc:
             else:
                 process_name = process_ref.name
 
+        if year is None:
+            year_text = 'timeless'
+        else:
+            year_text = year
+
         p_systems = {ps.name: ps.id
                      for ps in self.client.get_descriptors(olca.ProductSystem)
                      if process_name in ps.name}
         if p_systems:  # non-empty dict
             # if localization is needed, only localized systems will be checked
             if localization is not None:
+                adaptation_text = ' - {l} {y}'.format(l=localization, y=year_text)
                 for ps_name, ps_id in p_systems.items():
-                    if localization in ps_name:
-                        # if there is one corresponding the target, return it
-                        message = 'Localized ({c}) product system already exists'.format(c=localization)
+                    if adaptation_text in ps_name:
+                        # if year adaptation is needed, check existing ones for the year
+                        message = 'Adapted ({c} {y}) product system already exists'.format(c=localization, y=year_text)
                         message += ' with id: {id}'.format(id=ps_id)
                         logger.info(message)
                         return ps_id
             else:
-                # if no localized system needed, check systems only with no localization
+                # if no adapted system needed, check systems only with no localization
                 for ps_name, ps_id in p_systems.items():
                     if ' - ' not in ps_name:  # delimiter sign before localization notation
                         logger.info('Product system already exists with id: {id}'.format(id=ps_id))
@@ -1907,19 +2343,20 @@ class OpenLCAIpc:
 
         return system_ref_id
 
-    def get_calculated_results(self, impact_method: olca.ImpactMethod = None):
+    def get_calculated_results(self, impact_method: olca.ImpactMethod = None, table_name=None):
         """
         Retrieve calculated impact results from database
         :param impact_method:
         :return:
         """
 
-        if impact_method is None:
+        if impact_method is None and table_name is None:
             table_names = self.impact_db.table_names()
             methods = [tn for tn in table_names if self.db_name in tn]
             return methods
         else:
-            table_name = self.db_name + '_' + impact_method.id.replace('-', '_')
+            if table_name is None:
+                table_name = self.db_name + '_' + impact_method.id.replace('-', '_') + '_res'
             query = 'SELECT * FROM {tbl}'.format(
                 tbl=table_name,
             )
@@ -1936,9 +2373,10 @@ class OpenLCAIpc:
         :param table_name: the name of the table in the database
         :return: message as string
         """
+        if not self.impact_db.has_table(table_name):
+            return 'No table found for name: {n}'.format(n=table_name)
+        logger.info('Table {tn} will be deleted'.format(tn=table_name))
         if input('Are you sure? (y/n): ') == 'y':
-            if not self.impact_db.has_table(table_name):
-                return 'No table found for name: {n}'.format(n=table_name)
 
             query = 'DROP TABLE "{n}"'.format(n=table_name)
             self.impact_db.execute(query)
@@ -1946,6 +2384,25 @@ class OpenLCAIpc:
         else:
             return 'Cancelled'
 
+    def clear_result(self, table_name: str, ref_process_id: str):
+        """
+        Delete existing result within table from impact database
+        :param table_name: the name of the table in the database
+        :param ref_process_id: the id of the reference process
+        :return: message as string
+        """
+        if input('Are you sure? (y/n): ') == 'y':
+            if not self.impact_db.has_table(table_name):
+                return 'No table found for name: {n}'.format(n=table_name)
+
+            query = 'DELETE FROM "{n}" WHERE "RefProcessId"=\'{pid}\''.format(n=table_name, pid=ref_process_id)
+            self.impact_db.execute(query)
+            return 'Result has been deleted'.format(n=table_name)
+        else:
+            return 'Cancelled'
 
 class UnitOfMeasurementError(Exception):
+    pass
+
+class DateValidityError(Exception):
     pass

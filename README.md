@@ -16,12 +16,12 @@ Firepy is a python package for the environmental assessment of buildings based o
     - [ ] Physical data
     - [ ] Environmental impact data
     - [ ] Cost data
-- [ ] OpenLCA integration
+- [x] OpenLCA integration
 - [ ] Energy Calculation module
-    - [ ] IDF bindings
-    - [ ] EnergyPlus integration
-    - [ ] ISO 52016-1:2017 implementation
-- [ ] LCA calculation module
+    - [x] IDF bindings
+    - [x] EnergyPlus integration
+    - [x] ISO 52016-1:2017 implementation
+- [x] LCA calculation module
 
 # License & Credit
 This project is licensed under the terms of the MIT license. See the file "LICENSE" in the project root for more information.

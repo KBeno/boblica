@@ -175,6 +175,8 @@ def pareto_dominance(df: pd.DataFrame, objectives: list, non_dom: bool = True,
             non_dominated = non_dominated.append(candidate_index)
             evaluated = evaluated.append(candidate_index)
 
+        print('Evaluated: {e} / {t}'.format(e=len(evaluated), t=len(df)), end='\r')
+
         if len(evaluated) == len(df):
             # we are ready
             break
@@ -207,6 +209,6 @@ def pareto_rank(df: pd.DataFrame, objectives: list, max_rank: int = 10) -> pd.Da
             break
         rank += 1
         evaluating = dominated
-        logger.debug('Rank {r}: {n} - remaining: {d}'.format(r=rank, n=len(non_dominated), d=len(dominated)))
+        print('Rank {r}: {n} - remaining: {d}'.format(r=rank, n=len(non_dominated), d=len(dominated)))
 
     return df

@@ -576,11 +576,26 @@ def get_energy_results_detailed():
     return jsonify(energy_calc_results.to_json(orient='split'))
 
 
+@app.route("/idf", methods=['GET'])
+def get_idf():
+    """
+        Return the eppy IDF of the model
+        :return:
+        """
+    # get the name of the calculation setup
+    name = request.args.get('name')
+    if name is None:
+        return "Please provide 'name' argument to specify which model to return the IDF of"
+
+    idf_string = R.get('{name}:idf'.format(name=name))
+    return idf_string
+
+
 @app.route("/cleanup", methods=['GET'])
 def cleanup():
     name = request.args.get('name')
     if name is None:
-        return "Please provide 'name' argument to specify which setup tp cleanup"
+        return "Please provide 'name' argument to specify which setup to cleanup"
 
     target = request.args.get('target')
     msg = ''
@@ -594,6 +609,23 @@ def cleanup():
         res.close()
 
         app.logger.info('Result table {n} has been cleared'.format(n=name))
+        msg += 'Existing table {n} has been cleared; '.format(n=name)
+
+    if target == 'individuals':
+
+        if not RESULT_DB.has_table(name):
+            return 'No result found for name: {n}'.format(n=name)
+
+        iid = request.args.get('id')
+        if iid is None:
+            query = 'DELETE FROM "{n}"'.format(n=name)
+        else:
+            query = 'DELETE FROM "{n}" WHERE "calculation_id"=\'{pid}\''.format(n=name, pid=iid)
+
+        res = RESULT_DB.execute(query)
+        res.close()
+
+        app.logger.info('Individual result with id {id} from table {n} has been cleared'.format(n=name, id=iid))
         msg += 'Existing table {n} has been cleared; '.format(n=name)
 
     if target == 'simulations' or target is None:

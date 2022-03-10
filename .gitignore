@@ -2,7 +2,7 @@ __pycache__/
 
 firepy/tools/database.py
 examples/
-firepy/app/flaskapp.py
-firepy/app/flasksetup.py
+firepy/app/dash.py
+firepy/app/dashboard.py
 firepy/setup/config.ini
 firepy/setup/functions.py

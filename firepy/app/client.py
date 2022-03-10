@@ -212,26 +212,32 @@ class RemoteClient:
         response = requests.post(url=url, params={'name': name}, json=content)
         return response.text
 
-    def cleanup(self, name: str, target: str = None) -> str:
+    def cleanup(self, name: str, target: str = None, calc_id: str = None) -> str:
         """
         Cleanup server from stored data if target is not specified both will be deleted
         Prompts for confirmation
 
         :param name: name of the calculation setup
-        :param target: 'results' / 'simulations'
+        :param target: 'results' / 'individuals' / 'simulations' / 'setups'
+        :param calc_id: the calculation id if 'individuals' option is selected
         :return: message
         """
         url = self.url + '/cleanup'
 
         if target == 'results' or target is None:
             logger.warning('Result database will be cleared for setup: {n}'.format(n=name))
+        if target == 'individuals':
+            if calc_id is None:
+                logger.warning('All result for setup {n} will be cleared'.format(n=name))
+            else:
+                logger.warning('Individual result for setup {n} with id: {cid} will be cleared'.format(n=name, cid=calc_id))
         if target == 'simulations' or target is None:
             logger.warning('Simulation results will be deleted for setup: {n}'.format(n=name))
         if target == 'setups' or target is None:
             logger.warning('Setup items will be deleted for setup: {n}'.format(n=name))
 
         if input('Are you sure? (y/n): ') == 'y':
-            response = requests.get(url=url, params={'name': name, 'target': target})
+            response = requests.get(url=url, params={'name': name, 'target': target, 'id': calc_id})
             return response.text
         else:
             logger.warning('Cleanup cancelled')
@@ -389,4 +395,15 @@ class RemoteClient:
             df = pd.read_json(response.json(), orient='split')
             return df
         except JSONDecodeError:
+            return response.text
+
+    def get_idf(self, name: str, idd_path: Path) -> IDF:
+        url = self.url + '/idf'
+        response = requests.get(url=url, params={'name': name})
+        try:
+            IDF.setiddname(str(idd_path))
+            idf: IDF = IDF()
+            idf.initreadtxt(response.text)
+            return idf
+        except:
             return response.text

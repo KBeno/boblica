@@ -734,7 +734,7 @@ class ResultViewer:
     def __init__(self, calculation: Union[LCACalculation, CostCalculation]):
         self.calculation = calculation
 
-    def sunburst(self, model: Union[Building, Construction], indicator: str = None,
+    def sunburst(self, model: Union[Building, Construction], indicator: str = None, cost_cat: str = None,
                  library: ObjectLibrary = None, cutoff: float = 0.01) -> go.Figure:
         """
         Create sunburst diagram for cost or impact of a Building or a Construction
@@ -746,13 +746,17 @@ class ResultViewer:
         """
         if isinstance(self.calculation, LCACalculation):
             if indicator is None:
-                message = 'Please specify indicator for to create sunburst diagram for. '
+                message = 'Please specify indicator to create sunburst diagram for. '
                 message += 'Options: ' + ', '.join(self.calculation.impact_categories)
-                raise Exception('Please specify indicator for to create sunburst diagram for')
+                raise Exception(message)
             return self.__sunburst_lca(model=model, indicator=indicator, library=library, cutoff=cutoff)
 
         elif isinstance(self.calculation, CostCalculation):
-            return self.__sunburst_cost(model=model, library=library, cutoff=cutoff)
+            if cost_cat is None:
+                message = 'Please specify cost category to create sunburst diagram for. '
+                message += 'Options: ' + ', '.join(self.calculation.cost_categories)
+                raise Exception(message)
+            return self.__sunburst_cost(model=model, cost_cat=cost_cat, library=library, cutoff=cutoff)
 
 
     def __sunburst_lca(self, model: Union[Building, Construction], indicator: str,
@@ -797,19 +801,23 @@ class ResultViewer:
         values.append(int(total_value / total_value * 1000))
 
         def add_by_stage(impacts: pd.Series, label: str, parent: str):
+            # summarize to stage values
+            impacts = impacts.sum(level=1)
+
             for stage in ['A1-3', 'A4', 'A5', 'B4', 'B6', 'C1-4']:
-                stage_value = impacts[stage]
-                if stage_value / total_value > cutoff:
-                    if parent == 'Total':
-                        labels.append('{s}<br>{v:n}'.format(s=stage_names[stage], v=stage_value))
-                        ids.append(stage)
-                        parents.append('Total')
-                        values.append(int(stage_value / total_value * 1000))
-                    else:
-                        labels.append('{s}<br>{v:n}'.format(s=label, v=stage_value))
-                        ids.append(stage + parent + label)
-                        parents.append(stage + parent)
-                        values.append(int(stage_value / total_value * 1000))
+                if stage in impacts.index:
+                    stage_value = impacts[stage]
+                    if stage_value / total_value > cutoff:
+                        if parent == 'Total':
+                            labels.append('{s}<br>{v:n}'.format(s=stage_names[stage], v=stage_value))
+                            ids.append(stage)
+                            parents.append('Total')
+                            values.append(int(stage_value / total_value * 1000))
+                        else:
+                            labels.append('{s}<br>{v:n}'.format(s=label, v=stage_value))
+                            ids.append(stage + parent + label)
+                            parents.append(stage + parent)
+                            values.append(int(stage_value / total_value * 1000))
 
         # Create second level - main life cycle stages
         add_by_stage(total_impacts, '', 'Total')
@@ -887,9 +895,9 @@ class ResultViewer:
                 internal_slab_impacts = internal_slab.impacts.loc[indicator, :]
                 add_by_stage(internal_slab_impacts, 'Slabs', 'Internal')
 
-            heating = self.calculation.calculate_impact(model.HVAC.Heating) * self.calculation.rsp
-            cooling = self.calculation.calculate_impact(model.HVAC.Cooling) * self.calculation.rsp
-            lights = self.calculation.calculate_impact(model.HVAC.Lighting) * self.calculation.rsp
+            heating = self.calculation.calculate_impact(model.HVAC.Heating)
+            cooling = self.calculation.calculate_impact(model.HVAC.Cooling)
+            lights = self.calculation.calculate_impact(model.HVAC.Lighting)
             heating_impacts = heating.impacts.loc[indicator, :]
             cooling_impacts = cooling.impacts.loc[indicator, :]
             lights_impacts = lights.impacts.loc[indicator, :]
@@ -919,7 +927,7 @@ class ResultViewer:
         )
         return fig
 
-    def __sunburst_cost(self, model: Union[Building, Construction],
+    def __sunburst_cost(self, model: Union[Building, Construction], cost_cat: str,
                        library: ObjectLibrary = None, cutoff: float = 0.01) -> go.Figure:
         """
 
@@ -944,7 +952,7 @@ class ResultViewer:
         # Create first level - total
 
         total_cost_result = self.calculation.calculate_cost(model)
-        total_costs = total_cost_result.costs  # pd.Series
+        total_costs = total_cost_result.costs.loc[cost_cat, :]  # pd.Series
         total_value = total_costs.sum()
 
         if isinstance(model, Building):
@@ -960,19 +968,23 @@ class ResultViewer:
         values.append(int(total_value / total_value * 1000))
 
         def add_by_stage(costs: pd.Series, label: str, parent: str):
+            # summarize to stage values
+            costs = costs.sum(level=1)
+
             for stage in ['Production', 'Installation', 'Replacement', 'Operation']:
-                stage_value = costs[stage]
-                if stage_value / total_value > cutoff:
-                    if parent == 'Total':
-                        labels.append('{s}<br>{v:n}'.format(s=stage, v=stage_value))
-                        ids.append(stage)
-                        parents.append('Total')
-                        values.append(int(stage_value / total_value * 1000))
-                    else:
-                        labels.append('{s}<br>{v:n}'.format(s=label, v=stage_value))
-                        ids.append(stage + parent + label)
-                        parents.append(stage + parent)
-                        values.append(int(stage_value / total_value * 1000))
+                if stage in costs.index:
+                    stage_value = costs[stage]
+                    if stage_value / total_value > cutoff:
+                        if parent == 'Total':
+                            labels.append('{s}<br>{v:n}'.format(s=stage, v=stage_value))
+                            ids.append(stage)
+                            parents.append('Total')
+                            values.append(int(stage_value / total_value * 1000))
+                        else:
+                            labels.append('{s}<br>{v:n}'.format(s=label, v=stage_value))
+                            ids.append(stage + parent + label)
+                            parents.append(stage + parent)
+                            values.append(int(stage_value / total_value * 1000))
 
         # Create second level - main life cycle stages
         add_by_stage(total_costs, '', 'Total')
@@ -984,7 +996,7 @@ class ResultViewer:
             for mat in model.Layers:
                 material = library.get(mat)
                 mat_cst = self.calculation.calculate_cost(material, life_time_overwrites=life_times)
-                add_by_stage(mat_cst.costs, material.Name, '')
+                add_by_stage(mat_cst.costs.loc[cost_cat, :], material.Name, '')
 
         if isinstance(model, Building):
             # Third level - envelope / internal / HVAC
@@ -1023,32 +1035,32 @@ class ResultViewer:
             # Ignore Non-zone Surfaces for now
 
             if not envelope.costs.empty:
-                add_by_stage(envelope.costs, 'Envelope', '')
+                add_by_stage(envelope.costs.loc[cost_cat, :], 'Envelope', '')
             if not internal.costs.empty:
-                add_by_stage(internal.costs, 'Internal', '')
+                add_by_stage(internal.costs.loc[cost_cat, :], 'Internal', '')
 
             hvac_costs = self.calculation.calculate_cost(model.HVAC).costs
-            add_by_stage(hvac_costs, 'HVAC', '')
+            add_by_stage(hvac_costs.loc[cost_cat, :], 'HVAC', '')
 
             if not fenestration.costs.empty:
-                add_by_stage(fenestration.costs, 'Fenestration', 'Envelope')
+                add_by_stage(fenestration.costs.loc[cost_cat, :], 'Fenestration', 'Envelope')
             if not envelope_wall.costs.empty:
-                add_by_stage(envelope_wall.costs, 'Walls', 'Envelope')
+                add_by_stage(envelope_wall.costs.loc[cost_cat, :], 'Walls', 'Envelope')
             if not envelope_slab.costs.empty:
-                add_by_stage(envelope_slab.costs, 'Slabs', 'Envelope')
+                add_by_stage(envelope_slab.costs.loc[cost_cat, :], 'Slabs', 'Envelope')
 
             if not internal_wall.costs.empty:
-                add_by_stage(internal_wall.costs, 'Walls', 'Internal')
+                add_by_stage(internal_wall.costs.loc[cost_cat, :], 'Walls', 'Internal')
             if not internal_slab.costs.empty:
-                add_by_stage(internal_slab.costs, 'Slabs', 'Internal')
+                add_by_stage(internal_slab.costs.loc[cost_cat, :], 'Slabs', 'Internal')
 
-            heating = self.calculation.calculate_cost(model.HVAC.Heating) * self.calculation.rsp
-            cooling = self.calculation.calculate_cost(model.HVAC.Cooling) * self.calculation.rsp
-            lights = self.calculation.calculate_cost(model.HVAC.Lighting) * self.calculation.rsp
+            heating = self.calculation.calculate_cost(model.HVAC.Heating)
+            cooling = self.calculation.calculate_cost(model.HVAC.Cooling)
+            lights = self.calculation.calculate_cost(model.HVAC.Lighting)
 
-            add_by_stage(heating.costs, 'Heating', 'HVAC')
-            add_by_stage(cooling.costs, 'Cooling', 'HVAC')
-            add_by_stage(lights.costs, 'Lights', 'HVAC')
+            add_by_stage(heating.costs.loc[cost_cat, :], 'Heating', 'HVAC')
+            add_by_stage(cooling.costs.loc[cost_cat, :], 'Cooling', 'HVAC')
+            add_by_stage(lights.costs.loc[cost_cat, :], 'Lights', 'HVAC')
 
         trace = go.Sunburst(
             labels=labels,
@@ -1087,7 +1099,8 @@ class ResultViewer:
 class ScheduleViewer:
 
     @staticmethod
-    def view(idf: IDF, schedule_name: str):
+    def view(idf: IDF, schedule_name: str, subset: List[str] = None, rename: Mapping = None, ylim: Tuple = None,
+             facecolor = 'palegoldenrod', edgecolor = 'darkkhaki', linewidth = 2):
         """
         View all schedule profiles in an EnergyPlus compact schedule
         :param idf:  eppy IDF object
@@ -1125,19 +1138,32 @@ class ScheduleViewer:
                     schedule_frame.loc[until_int, for_name] = float(val)
         schedule_frame = schedule_frame.fillna(method='backfill')
 
+        if subset is not None:
+            schedule_frame = schedule_frame[subset]
+
+        if rename is not None:
+            schedule_frame = schedule_frame.rename(columns=rename)
+
         # create plots
         n = schedule_frame.shape[1]
         limits = (schedule_frame.stack().min(), schedule_frame.stack().max())
         fig, axs = plt.subplots(nrows=1, ncols=n)
         for i, schedule_name in enumerate(schedule_frame.columns.to_list()):
+            if n == 1:
+                ax = axs
+            else:
+                ax = axs[i]
             schedule = schedule_frame[schedule_name]
-            axs[i].fill_between(x=schedule.index, y1=schedule.values, step='pre', facecolor='palegoldenrod',
-                                edgecolor='gray')
-            axs[i].set_title(schedule_name)
-            axs[i].set_xticks(schedule.index, minor=True)
-            axs[i].set_xticks([0, 6, 12, 18, 24], minor=False)
-            axs[i].set_xticklabels(['0:00', '6:00', '12:00', '18:00', '24:00'])
-            axs[i].set_ylim(limits[0], limits[1] * 1.05)
+            ax.fill_between(x=schedule.index, y1=schedule.values, step='pre', facecolor=facecolor,
+                                edgecolor=edgecolor, linewidth=linewidth)
+            ax.set_title(schedule_name)
+            ax.set_xticks(schedule.index, minor=True)
+            ax.set_xticks([0, 6, 12, 18, 24], minor=False)
+            ax.set_xticklabels(['0:00', '6:00', '12:00', '18:00', '24:00'])
+            if ylim is not None:
+                ax.set_ylim(ylim)
+            else:
+                ax.set_ylim(limits[0], limits[1] * 1.05)
         fig.set_size_inches(3.5 * n, 2.2)
         plt.show()
 
@@ -1162,7 +1188,7 @@ class ConstructionViewer:
     def list_materials(library: ObjectLibrary) -> List[str]:
         return [mat.Name for mat in library.opaque_materials.values()]
 
-    def view(self, construction_name: str, library: ObjectLibrary, flip: bool = False):
+    def view(self, construction_name: str, library: ObjectLibrary, flip: bool = False, thickness_texts: Mapping = None):
         # TODO WindowMaterial
         if library.default_key != 'Name':
             library.change_key(to='Name')
@@ -1197,12 +1223,17 @@ class ConstructionViewer:
             else:
                 name = self.names[material.Name]
 
+            if thickness_texts is not None and material.Name in thickness_texts:
+                t_text = thickness_texts[material.Name]
+            else:
+                t_text = '{t} cm'.format(t=material.Thickness * 100)
+
             bottom = spacing
             top = spacing + material.Thickness
 
             text_pos = max((bottom + top) / 2, min_text_pos)
             min_text_pos = text_pos + 0.04
-            ax.text(x=0.2, y=text_pos, s='{t} cm'.format(t=material.Thickness * 100),
+            ax.text(x=0.2, y=text_pos, s=t_text,
                     verticalalignment='center', color=color, horizontalalignment='right',
                     bbox=dict(facecolor='white', alpha=0.8, edgecolor='white', boxstyle=('Round, pad=0.15')))
             ax.text(x=0.25, y=text_pos, s=name, verticalalignment='center', color=color,

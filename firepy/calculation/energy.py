@@ -119,6 +119,7 @@ class EnergyPlusSimulation:
             'ventilation': 'Zone Ventilation Sensible Heat Loss Energy',
             'lights': 'Zone Lights Electric Energy',
             'equipment': 'Zone Electric Equipment Electric Energy',
+            'other': 'Zone Other Equipment Total Heating Energy',
             'people': 'Zone People Total Heating Energy'
         },
         'surface': {
@@ -131,7 +132,7 @@ class EnergyPlusSimulation:
             'internal gain': 'Zone Air Heat Balance Internal Convective Heat Gain Rate',
             'convective': 'Zone Air Heat Balance Surface Convection Rate',
             'interzone air': 'Zone Air Heat Balance Interzone Air Transfer Rate',
-            'outdoor ait': 'Zone Air Heat Balance Outdoor Air Transfer Rate',
+            'outdoor air': 'Zone Air Heat Balance Outdoor Air Transfer Rate',
             'system air': 'Zone Air Heat Balance System Air Transfer Rate',
             'system convective': 'Zone Air Heat Balance System Convective Heat Gain Rate',
             'air storage': 'Zone Air Heat Balance Air Energy Storage Rate',
@@ -150,6 +151,7 @@ class EnergyPlusSimulation:
         'lights': 'J',
         'equipment': 'J',
         'people': 'J',
+        'other': 'J',
 
         'glazing gain': 'J',
         'conduction rate': 'W/m2',

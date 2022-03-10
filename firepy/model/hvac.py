@@ -1,12 +1,16 @@
 import uuid
 
 class Heating:
-    def __init__(self, name: str, efficiency: float, energy_source: str, set_point: float = 20):
+    def __init__(self, name: str, efficiency: float, energy_source: str, aux_energy_source: str = None,
+                 aux_energy_rate: float = 0, set_point: float = 20, number_of_units: float = 1):
         self.Name = name
         self.IuId = str(uuid.uuid1())  # Internal Unique Identifier
         self.efficiency = efficiency
         self.energy_source = energy_source
+        self.aux_energy_source = aux_energy_source
+        self.aux_energy_rate = aux_energy_rate
         self.set_point = set_point
+        self.n_units = number_of_units
 
     @property
     def set_point(self):
@@ -21,12 +25,14 @@ class Heating:
 
 
 class Cooling:
-    def __init__(self, name: str, efficiency: float, energy_source: str, set_point: float = 26):
+    def __init__(self, name: str, efficiency: float, energy_source: str, set_point: float = 26,
+                 number_of_units: float = 1):
         self.Name = name
         self.IuId = str(uuid.uuid1())  # Internal Unique Identifier
         self.efficiency = efficiency
         self.energy_source = energy_source
         self.set_point = set_point
+        self.n_units = number_of_units
 
     @property
     def set_point(self):
@@ -49,7 +55,8 @@ class NaturalVentilation:
 
 
 class Lighting:
-    def __init__(self, name: str, inefficiency: float, energy_source: str, power_density: float = 1):
+    def __init__(self, name: str, inefficiency: float, energy_source: str, power_density: float = 1,
+                 number_of_units: float = 1):
         """
 
         :param name:
@@ -63,6 +70,7 @@ class Lighting:
         self.inefficiency = inefficiency
         self.energy_source = energy_source
         self.power_density = power_density  # W/m2
+        self.n_units = number_of_units
 
 
 class HVAC:
