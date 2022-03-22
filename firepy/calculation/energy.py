@@ -1,3 +1,6 @@
+import shutil
+import subprocess
+import uuid
 from json import JSONDecodeError
 from typing import List, Union, Tuple
 import requests
@@ -167,7 +170,8 @@ class EnergyPlusSimulation:
     }
 
     def __init__(self, idf: IDF = None, epw_path: str = None, epw: str = None, output_freq: str = 'monthly',
-                 typ: str = 'local', output_directory: str = None, remote_server: RemoteConnection = None):
+                 typ: str = 'local', output_directory: str = None, remote_server: RemoteConnection = None,
+                 ep_exe_path = None):
         """
         A class to run EnergyPlus simulations either locally or remotely on a server
 
@@ -202,6 +206,8 @@ class EnergyPlusSimulation:
 
         self.output_frequency = output_freq
 
+        self.ep_exe_path = ep_exe_path
+
     @property
     def output_frequency(self):
         return self._output_frequency
@@ -219,14 +225,36 @@ class EnergyPlusSimulation:
         if self.idf is None:
             raise Exception('No idf set, unable to run simulation')
         if self.typ == 'local':
-            self.run_local()
-            return 'Local run complete'
+            local_response = self.run_local(**kwargs)
+            return local_response
         elif self.typ == 'remote':
             server_response = self.run_remote(**kwargs)
             return server_response
 
-    def run_local(self):
-        self.idf.run(output_directory=self.output_directory)
+    def run_local(self, name: str, sim_id: str = None) -> str:
+        if sim_id is None:
+            sim_id = str(uuid.uuid1())
+        output_path = Path(f'{self.output_directory}_{name}') / sim_id
+        if not output_path.exists():
+            output_path.mkdir(parents=True)
+
+        # self.idf.run(output_directory=str(output_path))
+
+        idf_address = output_path / "model.idf"
+
+        with idf_address.open('w') as idf_file:
+            idf_file.write(self.idf.idfstr())
+
+        # compose Energy Plus command
+        cmd = [self.ep_exe_path]
+        cmd += ["--output-directory", str(output_path)]  # output folder
+        cmd += ["--weather", self.idf.epw]  # weather file
+        cmd += ["--idd", self.idf.iddname]  # input data dictionary
+        cmd += [str(idf_address)]  # idf input file
+
+        subprocess.run(cmd)
+
+        return sim_id
 
     def run_remote(self, name: str, force_setup: bool = False, sim_id: str = None) -> str:
         # check first
@@ -372,7 +400,11 @@ class EnergyPlusSimulation:
     def results(self, variables: Union[str, List[str]], name: str = None,  sim_id: str = None,
                 typ: str = 'zone', period: str = 'monthly'):
         if self.typ == 'local':
-            return self.results_local(variables=variables, typ=typ, period=period)
+            if name is None:
+                raise Exception('Please provide "name" to access local results')
+            if sim_id is None:
+                raise Exception('Please provide simulation id to access local results')
+            return self.results_local(variables=variables, name=name, sim_id=sim_id, typ=typ, period=period)
         elif self.typ == 'remote':
             if name is None:
                 raise Exception('Please provide "name" to access remote results')
@@ -380,15 +412,37 @@ class EnergyPlusSimulation:
                 raise Exception('Please provide simulation id to access remote results')
             return self.results_remote(variables=variables, name=name, sim_id=sim_id, typ=typ, period=period)
 
-    def results_local(self, variables: Union[str, List[str]], typ: str = 'zone', period: str = 'monthly'):
+    def results_local(self, variables: Union[str, List[str]], name: str,  sim_id: str,
+                      typ: str = 'zone', period: str = 'monthly'):
         if variables == 'all':
             variables = EnergyPlusSimulation.var_dict[typ.lower()].keys()
 
         elif isinstance(variables, str):
             variables = [variables]
 
-        eso_path = self.output_directory + r'\eplusout.eso'
-        eso = esoreader.read_from_path(eso_path)
+        simulation_address = Path(f'{self.output_directory}_{name}') / sim_id
+
+        if not simulation_address.exists():
+            message = 'No result directory for id: {i}'.format(i=sim_id)
+            logger.debug(message)
+            return message
+
+        end_path = simulation_address / 'eplusout.end'
+        with end_path.open('r') as end_file:
+            end_success = end_file.readline()
+            logger.debug(end_success)
+        if 'EnergyPlus Completed Successfully' not in end_success:
+            message = 'Simulation failed for id: {i}'.format(i=sim_id)
+            logger.info(message)
+            return message
+
+        eso_path = simulation_address / 'eplusout.eso'
+        if not eso_path.exists():
+            message = 'No result for id: {i}'.format(i=sim_id)
+            logger.debug(message)
+            return message
+
+        eso = esoreader.read_from_path(str(eso_path))
         res_dfs = []
         for var in variables:
             var_name = EnergyPlusSimulation.var_dict[typ][var]
@@ -421,7 +475,12 @@ class EnergyPlusSimulation:
     def results_detailed(self, variable: str, name: str = None, sim_id: str = None,
                          typ: str = 'zone', period: str = 'monthly'):
         if self.typ == 'local':
-            return self.results_detailed_local(variable, typ, period)
+            if name is None:
+                raise Exception('Please provide "name" to access local results')
+            if sim_id is None:
+                raise Exception('Please provide "simulation id" to access local results')
+            return self.results_detailed_local(variable=variable, name=name, sim_id=sim_id,
+                                                typ=typ, period=period)
         elif self.typ == 'remote':
             if name is None:
                 raise Exception('Please provide "name" to access remote results')
@@ -430,10 +489,11 @@ class EnergyPlusSimulation:
             return self.results_detailed_remote(variable=variable, name=name, sim_id=sim_id,
                                                 typ=typ, period=period)
 
-    def results_detailed_local(self, variable: str, typ: str, period: str):
+    def results_detailed_local(self, variable: str, name: str, sim_id: str, typ: str, period: str):
 
-        eso_path = self.output_directory + r'\eplusout.eso'
-        eso = esoreader.read_from_path(eso_path)
+        simulation_address = Path(f'{self.output_directory}_{name}') / sim_id
+        eso_path = simulation_address / 'eplusout.eso'
+        eso = esoreader.read_from_path(str(eso_path))
 
         var_name = EnergyPlusSimulation.var_dict[typ][variable]
         df = eso.to_frame(var_name, frequency=period)
@@ -450,6 +510,11 @@ class EnergyPlusSimulation:
         response_json = self.server.results_detailed(variable=variable, name=name, sim_id=sim_id,
                                                      typ=typ, period=period)
         return pd.read_json(response_json, orient='split')
+
+    def drop_local_result(self, name: str, sim_id: str):
+        simulation_address = Path(f'{self.output_directory}_{name}') / sim_id
+        if simulation_address.exists():
+            shutil.rmtree(simulation_address)
 
 
 class SteadyStateCalculation:
