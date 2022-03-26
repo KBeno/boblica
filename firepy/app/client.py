@@ -1,7 +1,7 @@
 import requests
 import logging
 import json
-from typing import Mapping, Union, MutableMapping, List
+from typing import Mapping, Union, MutableMapping, List, Callable
 from json import JSONDecodeError
 from pathlib import Path
 from pprint import pformat
@@ -26,6 +26,44 @@ class RemoteClient:
             self.host = 'http://' + self.host
         self.url = '{host}:{port}'.format(host=self.host, port=self.port)
 
+        # args of the IdfSerializer.update_idf() method to be used in the update method:
+        self.idf_update_options = {
+            'update_collections': True,  # True / False
+            'zone_method': None,  # 'recreate' / 'update' / None
+            'non_zone_surf_method': None,  # 'recreate' / 'update' / None
+            'fenestration_method': 'recreate',  # 'recreate' / 'update' / None
+            'surface_method': None,  # 'recreate' / 'update' / None
+            'internal_mass_method': None  # 'recreate' / 'update' / None
+        }
+
+        # args of the EnergyPlusSimulation.set_outputs() method by output type
+        # as well as to the EnergyPlusSimulation.
+        self.energy_calculation_options = {
+            # what output to save during simulation
+            'outputs': {
+                'zone': [
+                    'heating',  # this is the minimum required by the lca calculation
+                    'cooling',  # this is the minimum required by the lca calculation
+                    # 'infiltration',
+                    # 'solar gains',
+                    # 'glazing loss',
+                    # 'opaque loss',
+                    # 'ventilation',
+                    'lights',  # this is the minimum required by the lca calculation
+                    # 'equipment',
+                    # 'people',
+                ],
+                'surface': [
+                    # 'opaque loss',
+                    # 'glazing loss',
+                    # 'glazing gain',
+                ]
+            },
+            # all lower resolutions will be saved
+            'output_resolution': 'runperiod',  # 'runperiod' / 'annual' / 'monthly' / 'daily' / 'hourly' / 'timestep'
+            'clear_existing_variables': True
+        }
+
     def setup(self,
               name: str,
               epw: Path = None,
@@ -36,6 +74,8 @@ class RemoteClient:
               lca_calculation: LCACalculation = None,
               cost_calculation: CostCalculation = None,
               energy_calculation: str = None,
+              update_model_function: Callable[[MutableMapping[str, Parameter], Building], Building] = None,
+              evaluate_function: Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame], pd.Series] = None,
               init_db: bool = True) -> str:
         """
         Setup the server with the following options. The options can also be set independently.
@@ -152,6 +192,45 @@ class RemoteClient:
                 return response.text
             else:
                 success['Energy Calculation'] = response.text
+
+        if update_model_function is not None:
+            logger.debug('Setting up update function on server')
+            func_dump = dill.dumps(update_model_function)
+            response = requests.post(url=url, params={'name': name, 'type': 'update_func'}, data=func_dump)
+            logger.debug('Response from server: ' + response.text)
+            if not response.text.startswith('OK'):
+                return response.text
+            else:
+                success['Update function'] = response.text
+
+        if evaluate_function is not None:
+            logger.debug('Setting up evaluate function on server')
+            func_dump = dill.dumps(evaluate_function)
+            response = requests.post(url=url, params={'name': name, 'type': 'evaluate_func'}, data=func_dump)
+            logger.debug('Response from server: ' + response.text)
+            if not response.text.startswith('OK'):
+                return response.text
+            else:
+                success['Evaluate function'] = response.text
+
+        logger.debug('Setting up idf update configuration on server')
+        idf_update_dump = dill.dumps(self.idf_update_options)
+        response = requests.post(url=url, params={'name': name, 'type': 'idf_update_options'}, data=idf_update_dump)
+        logger.debug('Response from server: ' + response.text)
+        if not response.text.startswith('OK'):
+            return response.text
+        else:
+            success['Idf update options'] = response.text
+
+        if energy_calculation == 'simulation':
+            logger.debug('Setting up simulation configuration on server')
+            sim_opt_dump = dill.dumps(self.energy_calculation_options)
+            response = requests.post(url=url, params={'name': name, 'type': 'simulation_options'}, data=sim_opt_dump)
+            logger.debug('Response from server: ' + response.text)
+            if not response.text.startswith('OK'):
+                return response.text
+            else:
+                success['Simulation options'] = response.text
 
         return '\n' + pformat(success)
 

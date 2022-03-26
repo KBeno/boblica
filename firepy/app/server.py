@@ -8,7 +8,7 @@ import traceback
 import uuid
 from importlib import reload
 from pathlib import Path
-from typing import MutableMapping, Tuple, Union, List, Mapping
+from typing import MutableMapping, Tuple, Union, List, Callable
 from datetime import datetime
 
 import redis
@@ -47,7 +47,7 @@ config.read(str(config_path))
 redis_host = config['Redis'].get('host')
 redis_port = config['Redis'].getint('port')
 R = redis.Redis(host=redis_host, port=redis_port)
-# Redis keys: [
+# Redis keys:
 #   calculation_name:epw, full epw string
 #   calculation_name:idf, full idf string
 #   calculation_name:model,
@@ -55,9 +55,13 @@ R = redis.Redis(host=redis_host, port=redis_port)
 #   calculation_name:lca_calculation,
 #   calculation_name:cost_calculation,
 #   calculation_name:energy_calculation,
-#   calculation_name:weather_data]
+#   calculation_name:weather_data
 #   calculation_name:last_calculation (timestamp of last calculation)
 #   calculation_name:running (integer number of currently running calculations)
+#   calculation_name:update_func
+#   calculation_name:evaluate_func
+#   calculation_name:idf_update_options
+#   calculation_name:simulation_options
 
 # setup energy calculation server from config
 
@@ -158,6 +162,30 @@ def setup():
         content = request.get_data()  # serialized pd.DataFrame
         R.set('{name}:weather_data'.format(name=setup_name), content)
 
+    # update function -> Redis
+    if content_type == 'update_func':
+        app.logger.info('Setting up update function for: {n}'.format(n=setup_name))
+        content = request.get_data()  # serialized function object
+        R.set('{name}:update_func'.format(name=setup_name), content)
+
+    # evaluate function -> Redis
+    if content_type == 'evaluate_func':
+        app.logger.info('Setting up evaluate function for: {n}'.format(n=setup_name))
+        content = request.get_data()  # serialized function object
+        R.set('{name}:evaluate_func'.format(name=setup_name), content)
+
+    # IDF update options -> Redis
+    if content_type == 'idf_update_options':
+        app.logger.info('Setting up IDF update options for: {n}'.format(n=setup_name))
+        content = request.get_data()  # serialized function object
+        R.set('{name}:idf_update_options'.format(name=setup_name), content)
+
+    # simulation options -> Redis
+    if content_type == 'simulation_options':
+        app.logger.info('Setting up simulation options for: {n}'.format(n=setup_name))
+        content = request.get_data()  # serialized function object
+        R.set('{name}:simulation_options'.format(name=setup_name), content)
+
     if msg:
         return 'OK - {m}'.format(m=msg)
     else:
@@ -184,8 +212,8 @@ def calculate():
         R.decr('{name}:running'.format(name=name))
         return msg
 
-    reload(firepy.setup.functions)
-    from firepy.setup.functions import evaluate
+    eval_type = Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame], pd.Series]
+    evaluate: eval_type = dill.loads(R.get(f'{name}:evaluate_func'))
 
     try:
         # ----------------------- MODEL UPDATE --------------------------------
@@ -308,6 +336,7 @@ def results():
 
     return jsonify(result.to_json(orient='split'))
 
+
 @app.route("/results/upload", methods=['POST'])
 def results_upload():
     name = request.args.get('name')
@@ -324,6 +353,7 @@ def results_upload():
         return "Result table with name {n} exists".format(n=name)
 
     return 'Results uploaded to database'
+
 
 @app.route("/instate", methods=['GET', 'POST'])
 def instate():
@@ -360,8 +390,8 @@ def instate():
     exec_time = toc - tic
 
     # ----------------------- EVALUATION --------------------------------
-    reload(firepy.setup.functions)
-    from firepy.setup.functions import evaluate
+    eval_type = Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame], pd.Series]
+    evaluate: eval_type = dill.loads(R.get(f'{name}:evaluate_func'))
 
     result = evaluate(impacts=impact_result.impacts, costs=cost_result.costs, energy=energy_result)
 
@@ -402,8 +432,8 @@ def reinstate():
     impact_result, cost_result, energy_result, sim_id = run(name=name, model=model, idf=idf, simulation_id=calc_id)
 
     # ----------------------- EVALUATION --------------------------------
-    reload(firepy.setup.functions)
-    from firepy.setup.functions import evaluate
+    eval_type = Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame], pd.Series]
+    evaluate: eval_type = dill.loads(R.get(f'{name}:evaluate_func'))
 
     result = evaluate(impacts=impact_result.impacts, costs=cost_result.costs, energy=energy_result)
 
@@ -732,16 +762,17 @@ def update_model(name: str, parameters: MutableMapping[str, Parameter]) -> Tuple
     # update the model
     model: Building = dill.loads(R.get('{name}:model'.format(name=name)))
 
-    reload(firepy.setup.functions)
-    from firepy.setup.functions import update_model, idf_update_options
+    update_type = Callable[[MutableMapping[str, Parameter], Building], Building]
+    update: update_type = dill.loads(R.get(f'{name}:update_func'))
 
-    model = update_model(parameters=parameters, model=model)
+    model = update(parameters=parameters, model=model)
 
     R.set('{name}:model'.format(name=name), dill.dumps(model))
 
     # update idf too along with the model
     app.logger.debug('Updating idf based on model: {n}'.format(n=name))
 
+    idf_update_options: MutableMapping = dill.loads(R.get(f'{name}:idf_update_options'))
     idf_string = R.get('{name}:idf'.format(name=name))
     IDF_PARSER.idf = idf_string.decode()
     IDF_PARSER.update_idf(model=model, **idf_update_options)
@@ -804,8 +835,7 @@ def run(name: str,
     # energy calculation
     if energy_calculation == 'simulation':
         if simulation_options is None:
-            reload(firepy.setup.functions)
-            from firepy.setup.functions import energy_calculation_options
+            energy_calculation_options: MutableMapping = dill.loads(R.get(f'{name}:simulation_options'))
         else:
             energy_calculation_options = simulation_options
 
