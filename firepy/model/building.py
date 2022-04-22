@@ -1,6 +1,11 @@
-from typing import List, Union, Mapping, MutableMapping
+from pathlib import Path
+from typing import List, Union, MutableMapping
 import math
 import uuid
+
+import pandas as pd
+import pandas.io.common
+
 from .geometry import Vector, Point, Face
 from .hvac import HVAC
 
@@ -21,6 +26,7 @@ class Ref:
 
     def __str__(self):
         return '{n} ({t}Ref)'.format(n=self.RefName, t=self.ObjType)
+
 
 # TODO we can leave this out and add this information at the IDF import level
 class GlobalGeometryRules:
@@ -81,6 +87,33 @@ class OpaqueMaterial:
     def get_ref(self):
         return Ref(self.IuId, self.Name, self.__class__.__name__)
 
+    def to_dict(self):
+        return {
+            'Name': self.Name,
+            'Roughness': self.Roughness,
+            'Thickness': self.Thickness,
+            'Conductivity': self.Conductivity,
+            'Density': self.Density,
+            'SpecificHeat': self.SpecificHeat,
+            'ThermalAbsorptance': self.ThermalAbsorptance,
+            'SolarAbsorptance': self.SolarAbsorptance,
+            'VisibleAbsorptance': self.VisibleAbsorptance,
+        }
+
+    @staticmethod
+    def from_dict(data):
+        return OpaqueMaterial(
+            name=data['Name'],
+            roughness=data['Roughness'],
+            thickness=data['Thickness'],
+            conductivity=data['Conductivity'],
+            density=data['Density'],
+            specific_heat=data['SpecificHeat'],
+            thermal_absorptance=data['ThermalAbsorptance'],
+            solar_absorptance=data['SolarAbsorptance'],
+            visible_absorptance=data['VisibleAbsorptance'],
+        )
+
 
 class WindowMaterial:
     def __init__(self, name: str, typ: str, u_value: float, g_value: float,
@@ -130,6 +163,29 @@ class WindowMaterial:
     def get_ref(self):
         return Ref(self.IuId, self.Name, self.__class__.__name__)
 
+    def to_dict(self):
+        return {
+            'Name': self.Name,
+            'Type': self.Type,
+            'GlazingId': self.GlazingId if self.GlazingId is not None else self.GlazingId,
+            'FrameId': self.FrameId if self.FrameId is not None else self.FrameId,
+            'UValue': self.UValue,
+            'gValue': self.gValue,
+            'SurfaceWeight': self.SurfaceWeight if self.SurfaceWeight is not None else None,
+        }
+
+    @staticmethod
+    def from_dict(data):
+        return WindowMaterial(
+            name=data['Name'],
+            typ=data['Type'],
+            glazing_id=None if math.isnan(data['GlazingId']) else data['GlazingId'],
+            frame_id=None if math.isnan(data['FrameId']) else data['FrameId'],
+            u_value=data['UValue'],
+            g_value=data['gValue'],
+            surface_weight=None if math.isnan(data['SurfaceWeight']) else data['SurfaceWeight'],
+        )
+
 
 # TODO
 # class GlazingMaterial:
@@ -157,6 +213,31 @@ class ShadeMaterial:
 
     def get_ref(self) -> Ref:
         return Ref(self.IuId, self.Name, self.__class__.__name__)
+
+    def to_dict(self):
+        return {
+            'Name': self.Name,
+            'Reflectance': self.Reflectance,
+            'Transmittance': self.Transmittance,
+            'Emissivity': self.Emissivity,
+            'Thickness': self.Thickness,
+            'Conductivity': self.Conductivity,
+            'Density': self.Density if self.Density is not None else None,
+            'DistanceToGlass': self.DistanceToGlass
+        }
+
+    @staticmethod
+    def from_dict(data):
+        return ShadeMaterial(
+            name=data['Name'],
+            reflectance=data['Reflectance'],
+            transmittance=data['Transmittance'],
+            emissivity=data['Emissivity'],
+            thickness=data['Thickness'],
+            conductivity=data['Conductivity'],
+            density=None if math.isnan(data['Density']) else data['Density'],
+            distance_to_glass=data['DistanceToGlass']
+        )
 
 
 class BlindMaterial:
@@ -189,6 +270,37 @@ class BlindMaterial:
 
     def get_ref(self) -> Ref:
         return Ref(self.IuId, self.Name, self.__class__.__name__)
+
+    def to_dict(self):
+        return {
+            'Name': self.Name,
+            'Reflectance': self.Reflectance,
+            'Transmittance': self.Transmittance,
+            'Emissivity': self.Emissivity,
+            'Thickness': self.Thickness,
+            'Conductivity': self.Conductivity,
+            'Density': self.Density if self.Density is not None else None,
+            'DistanceToGlass': self.DistanceToGlass,
+            'SlatWidth': self.SlatWidth,
+            'SlatSeparation': self.SlatSeparation,
+            'SlatAngle': self.SlatAngle
+        }
+
+    @staticmethod
+    def from_dict(data):
+        return BlindMaterial(
+            name=data['Name'],
+            reflectance=data['Reflectance'],
+            transmittance=data['Transmittance'],
+            emissivity=data['Emissivity'],
+            thickness=data['Thickness'],
+            conductivity=data['Conductivity'],
+            density=None if math.isnan(data['Density']) else data['Density'],
+            distance_to_glass=data['DistanceToGlass'],
+            slat_width=data['SlatWidth'],
+            slat_separation=data['SlatSeparation'],
+            slat_angle=data['SlatAngle']
+        )
 
 # class ShadingMaterial: # Deprecated
 #     def __init__(self, name: str, reflectance: float, transmittance: float, emissivity: float,
@@ -266,6 +378,29 @@ class Shading:
     def get_ref(self):
         return Ref(self.IuId, self.Name, self.__class__.__name__)
 
+    def to_dict(self):
+        return {
+            'Name': self.Name,
+            'Type': self.Type,
+            # 'Properties': self.Properties, # TODO remove from class
+            'Material': self.Material.RefName if self.Material is not None else None,
+            'Construction': self.Construction.RefName if self.Construction is not None else None,
+            'ShadingFactor': self.ShadingFactor,
+            'IsScheduled': self.IsScheduled
+        }
+
+    @staticmethod
+    def from_dict(data, lib):
+        return Shading(
+            name=data['Name'],
+            typ=data['Type'],
+            properties={}, # TODO would need ast.literal_eval() which is not nice
+            is_scheduled=bool(data['IsScheduled']),
+            material=lib.search_by_name(data['Material']) if isinstance(data['Material'], str) else None,
+            shading_factor=data['ShadingFactor'],
+            construction=lib.search_by_name(data['Construction']) if isinstance(data['Construction'], str) else None
+        )
+
 
 class Construction:
     def __init__(self, name: str, layers: List[Ref]):
@@ -285,6 +420,20 @@ class Construction:
 
     def get_ref(self):
         return Ref(self.IuId, self.Name, self.__class__.__name__)
+
+    def to_dict(self):
+        d = {
+            'Name': self.Name,
+        }
+        layer_dict = {f'Layer_{i}': layer.RefName for i, layer in enumerate(self.Layers)}
+        d.update(layer_dict)
+        return d
+
+    @staticmethod
+    def from_dict(data, library: "ObjectLibrary"):
+        name = data['Name']
+        layers = [library.search_by_name(data[layer_n]) for layer_n in sorted(data.keys()) if layer_n != 'Name']
+        return Construction(name, layers)
 
 
 class Surface(Face):
@@ -602,6 +751,29 @@ class ObjectLibrary:
                 return [obj for obj in self.constructions.values()]
             return self.constructions[ref_name]
 
+    def search_by_name(self, name: str) -> Ref:
+
+        if name in self.opaque_materials:
+            return self.opaque_materials[name].get_ref()
+
+        elif name in self.window_materials:
+            return self.window_materials[name].get_ref()
+
+        elif name in self.shade_materials:
+            return self.shade_materials[name].get_ref()
+
+        elif name in self.blind_materials:
+            return self.blind_materials[name].get_ref()
+
+        elif name in self.shadings:
+            return self.shadings[name].get_ref()
+
+        elif name in self.constructions:
+            return self.constructions[name].get_ref()
+
+        else:
+            raise Exception("No object found with name {}".format(name))
+
     def __contains__(self, item):
 
         key = getattr(item, self._obj_key)
@@ -679,6 +851,123 @@ class ObjectLibrary:
             self.constructions[key] = obj
             return True
 
+    def to_csv(self, folder_path: Union[str, Path]):
+        """Write out library to CSV format
+
+        The function will write out all the objects in the library to a series of CSV files.
+
+        Parameters
+        ----------
+        folder_path : str or Path
+            file path to the folder to write out the library to
+
+        Returns
+        -------
+            None
+        """
+        folder = Path(folder_path)
+        folder.mkdir(parents=True, exist_ok=True)
+
+        construction_df = pd.DataFrame([c.to_dict() for c in self.constructions.values()])
+        construction_df.to_csv(folder / Path('constructions.csv'), index=False)
+
+        opaque_material_df = pd.DataFrame([m.to_dict() for m in self.opaque_materials.values()])
+        opaque_material_df.to_csv(folder / Path('opaque_materials.csv'), index=False)
+
+        window_material_df = pd.DataFrame([m.to_dict() for m in self.window_materials.values()])
+        window_material_df.to_csv(folder / Path('window_materials.csv'), index=False)
+
+        shade_material_df = pd.DataFrame([m.to_dict() for m in self.shade_materials.values()])
+        shade_material_df.to_csv(folder / Path('shade_materials.csv'), index=False)
+
+        blind_material_df = pd.DataFrame([m.to_dict() for m in self.blind_materials.values()])
+        blind_material_df.to_csv(folder / Path('blind_materials.csv'), index=False)
+
+        shading_df = pd.DataFrame([s.to_dict() for s in self.shadings.values()])
+        shading_df.to_csv(folder / Path('shadings.csv'), index=False)
+
+    @staticmethod
+    def from_csv(file_path: Union[str, Path]) -> 'ObjectLibrary':
+        """Read library from CSV format
+
+        Parameters
+        ----------
+        file_path
+            file path of the source csv file
+
+        Returns
+        -------
+        ObjectLibrary
+            the reconstructed Library
+
+        """
+
+        library = ObjectLibrary(default_key='Name')
+
+        def add_opaque_material(material_series: pd.Series) -> bool:
+            material = OpaqueMaterial.from_dict(material_series.to_dict())
+            return library.add(material)
+
+        def add_window_material(material_series: pd.Series) -> bool:
+            material = WindowMaterial.from_dict(material_series.to_dict())
+            return library.add(material)
+
+        def add_shade_material(material_series: pd.Series) -> bool:
+            material = ShadeMaterial.from_dict(material_series.to_dict())
+            return library.add(material)
+
+        def add_blind_material(material_series: pd.Series) -> bool:
+            material = BlindMaterial.from_dict(material_series.to_dict())
+            return library.add(material)
+
+        def add_construction(construction_series: pd.Series, lib) -> bool:
+            construction = Construction.from_dict(construction_series.dropna().to_dict(), lib)
+            return library.add(construction)
+
+        def add_shading(shading_series: pd.Series, lib) -> bool:
+            shading = Shading.from_dict(shading_series.to_dict(), lib)
+            return library.add(shading)
+
+        try:
+            opaque_material_df = pd.read_csv(file_path / Path('opaque_materials.csv'))
+            opaque_material_df.apply(add_opaque_material, axis='columns')
+        except (FileNotFoundError, pandas.io.common.EmptyDataError):
+            pass
+
+        try:
+            window_material_df = pd.read_csv(file_path / Path('window_materials.csv'))
+            window_material_df.apply(add_window_material, axis='columns')
+        except (FileNotFoundError, pandas.io.common.EmptyDataError):
+            pass
+
+        try:
+            shade_material_df = pd.read_csv(file_path / Path('shade_materials.csv'))
+            shade_material_df.apply(add_shade_material, axis='columns')
+        except (FileNotFoundError, pandas.io.common.EmptyDataError):
+            pass
+
+        try:
+            blind_material_df = pd.read_csv(file_path / Path('blind_materials.csv'))
+            blind_material_df.apply(add_blind_material, axis='columns')
+        except (FileNotFoundError, pandas.io.common.EmptyDataError):
+            pass
+
+        # The following needs to be done after all materials are added, to be able to search the references
+        try:
+            construction_df = pd.read_csv(file_path / Path('constructions.csv'))
+            construction_df.apply(add_construction, axis='columns', lib=library)
+        except (FileNotFoundError, pandas.io.common.EmptyDataError):
+            pass
+
+        try:
+            shading_df = pd.read_csv(file_path / Path('shadings.csv'))
+            shading_df.apply(add_shading, axis='columns', lib=library)
+        except (FileNotFoundError, pandas.io.common.EmptyDataError):
+            pass
+
+        # TODO check success of all operations
+        return library
+
 
 class Building:
     def __init__(self, name: str, zones: List[Zone], non_zone_surfaces: List[NonZoneSurface],
@@ -703,6 +992,15 @@ class Building:
         self.HVAC = hvac
         self.GlobalGeometryRules = global_geometry_rules
         self.BuildingFunction = building_function
+
+    @property
+    def Library(self):
+        return self._library
+
+    @Library.setter
+    def Library(self, library: ObjectLibrary):
+        # TODO check and update all Ref objects in the model
+        self._library = library
 
     def heated_area(self):
         heated_area = 0
