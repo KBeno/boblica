@@ -43,7 +43,8 @@ setup(
         'SQLAlchemy==1.3.11',
         'Jinja2==2.10.3',
         'MarkupSafe==1.1.1',
-        'itsdangerous==1.1.0'
+        'itsdangerous==1.1.0',
+        'psycopg2-binary==2.8.4'
     ],
     python_requires='>=3.7',
 )

@@ -18,7 +18,6 @@ import sqlalchemy
 from flask import Flask, request, jsonify
 from eppy.modeleditor import IDF
 
-import firepy.setup.functions
 from firepy.tools.optimization import Parameter
 from firepy.tools.serializer import IdfSerializer
 from firepy.calculation.energy import RemoteConnection, EnergyPlusSimulation, SteadyStateCalculation
@@ -38,7 +37,7 @@ config = configparser.ConfigParser()
 try:
     config_path = Path(os.environ['FIREPY_CONFIG'])
 except KeyError:
-    config_path = Path('../setup/config.ini')
+    config_path = Path('config.ini')
 
 app.logger.debug('Reading configuration from: {fp}'.format(fp=config_path))
 config.read(str(config_path))
