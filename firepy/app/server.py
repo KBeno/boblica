@@ -39,12 +39,47 @@ try:
 except KeyError:
     config_path = Path('config.ini')
 
-app.logger.debug('Reading configuration from: {fp}'.format(fp=config_path))
-config.read(str(config_path))
+if config_path.exists():
+    app.logger.debug('Reading configuration from: {fp}'.format(fp=config_path))
+    config.read(str(config_path))
+
+    redis_host = config['Redis'].get('host')
+    redis_port = config['Redis'].getint('port')
+
+    ep_host = config['Calculation.Energy'].get('host')
+    ep_port = config['Calculation.Energy'].getint('port')
+
+    idd_path_string = config['Firepy'].get('idd_path')
+
+    db_host = config['Database.Result'].get('host')
+    db_port = config['Database.Result'].getint('port')
+    db_user = config['Database.Result'].get('user')
+    db_pw = config['Database.Result'].get('password')
+    # db_name = config['Database.Result'].get('database')  # TODO unused
+
+else:
+    app.logger.debug('Reading configuration from environment variables')
+    try:
+        redis_host = os.environ['REDIS_HOST']
+        redis_port = os.environ['REDIS_PORT']
+
+        ep_host = os.environ['ENERGYPLUS_HOST']
+        ep_port = os.environ['ENERGYPLUS_PORT']
+
+        # Use default idd path
+        idd_path_string = '/firepy/energyplus.idd'
+
+        db_host = os.environ['RESULT_DB_HOST']
+        db_port = os.environ['RESULT_DB_PORT']
+        db_user = os.environ['RESULT_DB_USER']
+        db_pw = os.environ['RESULT_DB_PASSWORD']
+        # db_name = os.environ['RESULTDB_DBNAME']  # TODO unused
+
+    except KeyError as e:
+        app.logger.error('Missing configuration variable: {e}'.format(e=e))
+        raise e
 
 # initiate redis client from config to store and get objects
-redis_host = config['Redis'].get('host')
-redis_port = config['Redis'].getint('port')
 R = redis.Redis(host=redis_host, port=redis_port)
 # Redis keys:
 #   calculation_name:epw, full epw string
@@ -63,31 +98,17 @@ R = redis.Redis(host=redis_host, port=redis_port)
 #   calculation_name:simulation_options
 
 # setup energy calculation server from config
-
-ep_host = config['Calculation.Energy'].get('host')
-ep_port = config['Calculation.Energy'].getint('port')
 server = RemoteConnection(host=ep_host, port=ep_port)
 ENERGY_CALCULATION = EnergyPlusSimulation(typ='remote', remote_server=server)
 
 ENERGY_STEADY_STATE = SteadyStateCalculation()
 
 # setup idf_serializer -> from config (no need for shared data)
-idd_path_string = config['Firepy'].get('idd_path')
 idd_path = Path(idd_path_string)
 IDF_PARSER = IdfSerializer(idd_path=idd_path)
 
 # Setup result database from config
-db_host = config['Database.Result'].get('host')
-db_port = config['Database.Result'].getint('port')
-db_user = config['Database.Result'].get('user')
-db_pw = config['Database.Result'].get('password')
-db_name = config['Database.Result'].get('database')
-connection_string = 'postgresql://{user}:{pw}@{host}:{port}'.format(
-    user=db_user,
-    pw=db_pw,
-    host=db_host,
-    port=db_port
-)
+connection_string = f'postgresql://{db_user}:{db_pw}@{db_host}:{db_port}'
 RESULT_DB = sqlalchemy.create_engine(connection_string)
 
 
