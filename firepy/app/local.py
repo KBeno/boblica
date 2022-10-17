@@ -343,13 +343,18 @@ class LocalClient:
         # update the model
         self.model = self.update_model(parameters=parameters, model=self.model)
 
-        # update idf too along with the model
-        logger.debug('Updating idf based on model: {n}'.format(n=self.name))
+        # If idf is present, update idf too along with the model
+        if self.idf is not None:
+            logger.debug('Updating idf based on model: {n}'.format(n=self.name))
 
-        self.idf_parser.idf = self.idf
-        self.idf_parser.update_idf(model=self.model, **self.idf_update_options)
+            self.idf_parser.idf = self.idf
+            self.idf_parser.update_idf(model=self.model, **self.idf_update_options)
 
-        return self.model, self.idf_parser.idf
+            return self.model, self.idf_parser.idf
+        
+        # Otherwise, return the model only, and None for idf
+        else:
+            return self.model, None
 
     def _run(self,
              model: Building,
