@@ -2,6 +2,7 @@ import logging
 import shutil
 import sys
 import time
+import traceback
 import uuid
 from pathlib import Path
 from typing import MutableMapping, Mapping, Union, Callable, Tuple, List
@@ -234,7 +235,7 @@ class LocalClient:
         except Exception as err:
             # if anything goes wrong return an invalid result value (e.g. infinity)
             logger.info('Calculation failed with error: {e}: {r}'.format(e=sys.exc_info()[0], r=err))
-            logger.debug('Traceback:')
+            logger.debug('Traceback: {tr}'.format(tr=traceback.format_exc()))
 
             result = self.evaluate()
             sim_id = 'failed'
