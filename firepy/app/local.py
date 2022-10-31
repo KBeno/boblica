@@ -616,6 +616,9 @@ class LocalClient:
     def get_params(self) -> Mapping:
         return {name: par.value for name, par in self.parameters.items()}
 
+    def get_full_params(self) -> List[Parameter]:
+        return [p for p in self.parameters.values()]
+
     def get_energy(self, calc_id: str = None,
                    variables: List[str] = None,
                    typ: str = 'zone',
