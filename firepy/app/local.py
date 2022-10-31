@@ -201,7 +201,7 @@ class LocalClient:
 
         return 'OK'
 
-    def calculate(self, parameters: MutableMapping[str, Union[float, int, str]]):
+    def calculate(self, parameters: MutableMapping[str, Union[float, int, str]], name=None):
         """
         Calculate the impact based on the parameters
         Model is updated, calculations are made and results are written into a local result DataFrame

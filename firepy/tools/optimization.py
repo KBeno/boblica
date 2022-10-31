@@ -6,9 +6,6 @@ import math
 import pandas as pd
 import numpy as np
 
-from firepy.app.client import RemoteClient
-from firepy.app.local import LocalClient
-
 
 logger = logging.getLogger(__name__)
 
@@ -121,11 +118,7 @@ class MonteCarloSimulation:
         np.random.seed(seed)
         params = {p.name: p.random() for p in self.parameters}
 
-        if isinstance(self.client, RemoteClient):
-            self.client.calculate(name=self.name, parameters=params)
-        
-        elif isinstance(self.client, LocalClient):
-            self.client.calculate(parameters=params)
+        self.client.calculate(name=self.name, parameters=params)
 
         return seed
 
