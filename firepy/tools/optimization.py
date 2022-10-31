@@ -92,7 +92,7 @@ class Parameter:
 
 class MonteCarloSimulation:
 
-    def __init__(self, client: Union[RemoteClient, LocalClient], name: str):
+    def __init__(self, client, name: str):
         self.client = client
         self.name = name
 
