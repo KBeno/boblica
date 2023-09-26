@@ -1,6 +1,7 @@
-# firepy
+# Boblica
 
-Firepy is a python package for the environmental assessment of buildings based on Life Cycle Assessment (LCA)
+Boblica is a python package for the environmental assessment of buildings based on Life Cycle Assessment (LCA)
+You can find the [documentation here](https://boblica.readthedocs.io/).
 
 # Introduction
 

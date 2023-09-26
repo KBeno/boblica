@@ -15,8 +15,8 @@ import pandas as pd
 import numpy as np
 from pandas import Series
 
-from firepy.model import HVAC, Heating, Cooling, NaturalVentilation
-from firepy.model.building import Construction, OpaqueMaterial, WindowMaterial, ObjectLibrary, BuildingSurface, \
+from boblica.model import HVAC, Heating, Cooling, NaturalVentilation
+from boblica.model.building import Construction, OpaqueMaterial, WindowMaterial, ObjectLibrary, BuildingSurface, \
     Building, Zone, Ref
 
 logger = logging.getLogger(__name__)

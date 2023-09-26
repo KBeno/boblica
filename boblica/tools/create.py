@@ -4,10 +4,10 @@ import logging
 import math
 import pandas as pd
 
-from firepy.model.building import OpaqueMaterial, WindowMaterial, ShadeMaterial, BlindMaterial, Shading, Construction
-from firepy.model.building import BuildingSurface, FenestrationSurface, Zone, NonZoneSurface, Building
-from firepy.model.building import Ref, ObjectLibrary
-from firepy.model.geometry import Rectangle, Vector, Point, Box, move, Plane, Line
+from boblica.model.building import OpaqueMaterial, WindowMaterial, ShadeMaterial, BlindMaterial, Shading, Construction
+from boblica.model.building import BuildingSurface, FenestrationSurface, Zone, NonZoneSurface, Building
+from boblica.model.building import Ref, ObjectLibrary
+from boblica.model.geometry import Rectangle, Vector, Point, Box, move, Plane, Line
 
 logger = logging.getLogger(__name__)
 

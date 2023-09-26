@@ -1,6 +1,6 @@
 import pathlib
 from setuptools import setup
-from firepy import __version__
+from boblica import __version__
 
 # The directory containing this file
 HERE = pathlib.Path(__file__).parent
@@ -10,7 +10,7 @@ README = (HERE / 'README.md').read_text()
 
 
 setup(
-    name='firepy',
+    name='boblica',
     version=__version__,
     description='Building Life Cycle Assessment and Optimisation',
     long_description=README,
@@ -24,11 +24,11 @@ setup(
         'Programming Language :: Python :: 3.7',
     ],
     packages=[
-        'firepy.app',
-        'firepy.calculation',
-        'firepy.model',
-        'firepy.setup',
-        'firepy.tools',
+        'boblica.app',
+        'boblica.calculation',
+        'boblica.model',
+        'boblica.setup',
+        'boblica.tools',
     ],
     install_requires=[
         'dill==0.3.1.1',

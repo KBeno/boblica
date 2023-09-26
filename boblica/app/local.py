@@ -10,12 +10,12 @@ from typing import MutableMapping, Mapping, Union, Callable, Tuple, List
 from eppy.modeleditor import  IDF
 import pandas as pd
 
-from firepy.calculation.energy import EnergyPlusSimulation, SteadyStateCalculation
-from firepy.tools.optimization import Parameter
-from firepy.model.building import Building
-from firepy.calculation.lca import LCACalculation, ImpactResult
-from firepy.calculation.cost import CostCalculation, CostResult
-from firepy.tools.serializer import IdfSerializer
+from boblica.calculation.energy import EnergyPlusSimulation, SteadyStateCalculation
+from boblica.tools.optimization import Parameter
+from boblica.model.building import Building
+from boblica.calculation.lca import LCACalculation, ImpactResult
+from boblica.calculation.cost import CostCalculation, CostResult
+from boblica.tools.serializer import IdfSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -132,8 +132,8 @@ class LocalClient:
         :param epw: Path to epw file for weather data for simulation
         :param weather_data: Path to csv weather data for steady state energy calculation
         :param idf: eppy IDF model of the building
-        :param model: converted firepy model of the building
-        :param parameters: dict of firepy Parameters to use for parametric definition
+        :param model: converted boblica model of the building
+        :param parameters: dict of boblica Parameters to use for parametric definition
         :param lca_calculation:
         :param cost_calculation:
         :param energy_calculation: 'simulation' or 'steady_state'

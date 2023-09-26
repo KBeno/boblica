@@ -8,12 +8,12 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection, Line3DCollection
 import matplotlib.pyplot as plt
 from eppy.modeleditor import IDF
 
-from firepy.calculation.cost import CostCalculation
-from firepy.model.geometry import Point, Vector, Line, Ray, Plane, Rectangle, Box, Face
-from firepy.model.building import BuildingSurface, FenestrationSurface, NonZoneSurface, Zone, Building, Ref
-from firepy.model.building import ObjectLibrary, Construction
+from boblica.calculation.cost import CostCalculation
+from boblica.model.geometry import Point, Vector, Line, Ray, Plane, Rectangle, Box, Face
+from boblica.model.building import BuildingSurface, FenestrationSurface, NonZoneSurface, Zone, Building, Ref
+from boblica.model.building import ObjectLibrary, Construction
 
-from firepy.calculation.lca import LCACalculation
+from boblica.calculation.lca import LCACalculation
 
 Color = Union[str, Tuple[int, int, int, float], Tuple[float, float, float, float]]
 
@@ -772,7 +772,7 @@ class ResultViewer:
         import locale
         locale.setlocale(locale.LC_ALL, '')
 
-        from firepy.calculation.lca import IMPACT_CATEGORIES, ImpactResult
+        from boblica.calculation.lca import IMPACT_CATEGORIES, ImpactResult
 
         impact_unit = IMPACT_CATEGORIES[indicator]['Impact Unit']
         stage_names = self.get_stage_names()
@@ -940,7 +940,7 @@ class ResultViewer:
         import locale
         locale.setlocale(locale.LC_ALL, '')
 
-        from firepy.calculation.cost import CostResult
+        from boblica.calculation.cost import CostResult
 
         cost_unit = 'EUR'
 
@@ -1085,7 +1085,7 @@ class ResultViewer:
 
     @staticmethod
     def get_stage_names() -> MutableMapping:
-        from firepy.calculation.lca import LIFE_CYCLE_STAGES
+        from boblica.calculation.lca import LIFE_CYCLE_STAGES
 
         names = {}
         for stage_code, stage in LIFE_CYCLE_STAGES.items():

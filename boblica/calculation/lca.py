@@ -11,9 +11,9 @@ import pandas as pd
 import olca
 import sqlalchemy
 
-import firepy.model.building
-import firepy.model.hvac
-from firepy.model.building import ObjectLibrary
+import boblica.model.building
+import boblica.model.hvac
+from boblica.model.building import ObjectLibrary
 
 logger = logging.getLogger(__name__)
 
@@ -385,7 +385,7 @@ class LCACalculation:
             self._impact_data = source
 
     @staticmethod
-    def generate_tables(building: firepy.model.building.Building) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def generate_tables(building: boblica.model.building.Building) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Generate a template for LifeCycleData and ImpactData to be filled by the user
         It collects all the used material and resource names that need an input
@@ -554,19 +554,19 @@ class LCACalculation:
     def clear_cache(self):
         self._impact_results = {}
 
-    def calculate_impact(self, obj: Union[firepy.model.building.OpaqueMaterial,
-                                          firepy.model.building.WindowMaterial,
-                                          firepy.model.building.ShadeMaterial,
-                                          firepy.model.building.BlindMaterial,
-                                          firepy.model.building.Shading,
-                                          firepy.model.building.Construction,
-                                          firepy.model.building.BuildingSurface,
-                                          firepy.model.building.FenestrationSurface,
-                                          firepy.model.hvac.Heating,
-                                          firepy.model.hvac.Cooling,
-                                          firepy.model.hvac.Lighting,
-                                          firepy.model.hvac.HVAC,
-                                          firepy.model.building.Building],
+    def calculate_impact(self, obj: Union[boblica.model.building.OpaqueMaterial,
+                                          boblica.model.building.WindowMaterial,
+                                          boblica.model.building.ShadeMaterial,
+                                          boblica.model.building.BlindMaterial,
+                                          boblica.model.building.Shading,
+                                          boblica.model.building.Construction,
+                                          boblica.model.building.BuildingSurface,
+                                          boblica.model.building.FenestrationSurface,
+                                          boblica.model.hvac.Heating,
+                                          boblica.model.hvac.Cooling,
+                                          boblica.model.hvac.Lighting,
+                                          boblica.model.hvac.HVAC,
+                                          boblica.model.building.Building],
                          library: ObjectLibrary = None, **kwargs) -> ImpactResult:
         """
         Calculate the environmental impact of Firepy objects
@@ -582,10 +582,10 @@ class LCACalculation:
             return self.impact_results[obj.IuId]
 
         else:
-            if isinstance(obj, (firepy.model.building.OpaqueMaterial,
-                                firepy.model.building.WindowMaterial,
-                                firepy.model.building.ShadeMaterial,
-                                firepy.model.building.BlindMaterial)):
+            if isinstance(obj, (boblica.model.building.OpaqueMaterial,
+                                boblica.model.building.WindowMaterial,
+                                boblica.model.building.ShadeMaterial,
+                                boblica.model.building.BlindMaterial)):
 
                 if self.considered is not None and getattr(obj, self.match_prop) not in self.considered:
                     if getattr(obj, self.match_prop) not in self.ignored:
@@ -595,55 +595,55 @@ class LCACalculation:
                 else:
                     logger.debug('Calculating impact of {t}: {n}'.format(t=obj.__class__.__name__, n=obj.Name))
 
-                    if isinstance(obj, firepy.model.building.OpaqueMaterial):
+                    if isinstance(obj, boblica.model.building.OpaqueMaterial):
                         return self.__opaque_material(obj, **kwargs)  # **life_time_overwrites
 
-                    elif isinstance(obj, firepy.model.building.WindowMaterial):
+                    elif isinstance(obj, boblica.model.building.WindowMaterial):
                         return self.__window_material(obj)
 
-                    elif isinstance(obj, firepy.model.building.ShadeMaterial):
+                    elif isinstance(obj, boblica.model.building.ShadeMaterial):
                         return self.__shade_or_blind_material(obj)
 
-                    elif isinstance(obj, firepy.model.building.BlindMaterial):
+                    elif isinstance(obj, boblica.model.building.BlindMaterial):
                         return self.__shade_or_blind_material(obj)
 
             else:
                 logger.debug('Calculating impact of {t}: {n}'.format(t=obj.__class__.__name__, n=obj.Name))
 
-                if isinstance(obj, firepy.model.building.Shading):
+                if isinstance(obj, boblica.model.building.Shading):
                     return self.__shading(obj, library)
 
-                elif isinstance(obj, firepy.model.building.Construction):
+                elif isinstance(obj, boblica.model.building.Construction):
                     return self.__construction(obj, library, **kwargs)  # typ: 'opaque' / 'window' / 'shading'
 
-                elif isinstance(obj, firepy.model.building.BuildingSurface):
+                elif isinstance(obj, boblica.model.building.BuildingSurface):
                     return self.__building_surface(obj, library)
 
-                elif isinstance(obj, firepy.model.building.FenestrationSurface):
+                elif isinstance(obj, boblica.model.building.FenestrationSurface):
                     return self.__fenestration_surface(obj, library)
 
-                elif isinstance(obj, firepy.model.building.NonZoneSurface):
+                elif isinstance(obj, boblica.model.building.NonZoneSurface):
                     return self.__non_zone_surface(obj, library)
 
-                elif isinstance(obj, firepy.model.building.InternalMass):
+                elif isinstance(obj, boblica.model.building.InternalMass):
                     return self.__internal_mass(obj, library)
 
-                elif isinstance(obj, firepy.model.building.Zone):
+                elif isinstance(obj, boblica.model.building.Zone):
                     return self.__zone(obj, library)
 
-                elif isinstance(obj, firepy.model.hvac.Heating):
+                elif isinstance(obj, boblica.model.hvac.Heating):
                     return self.__heating(obj, **kwargs)  # heating_demand
 
-                elif isinstance(obj, firepy.model.hvac.Cooling):
+                elif isinstance(obj, boblica.model.hvac.Cooling):
                     return self.__cooling(obj, **kwargs)  # cooling_demand
 
-                elif isinstance(obj, firepy.model.hvac.Lighting):
+                elif isinstance(obj, boblica.model.hvac.Lighting):
                     return self.__lighting(obj, **kwargs)  # lighting_energy
 
-                elif isinstance(obj, firepy.model.hvac.HVAC):
+                elif isinstance(obj, boblica.model.hvac.HVAC):
                     return self.__hvac(obj, **kwargs)  # demands
 
-                elif isinstance(obj, firepy.model.building.Building):
+                elif isinstance(obj, boblica.model.building.Building):
                     return self.__building(obj, **kwargs)  # demands
 
     def __null_result(self, obj) -> ImpactResult:
@@ -836,7 +836,7 @@ class LCACalculation:
 
         return impacts
 
-    def __opaque_material(self, material: firepy.model.building.OpaqueMaterial,
+    def __opaque_material(self, material: boblica.model.building.OpaqueMaterial,
                           life_time_overwrites: dict = None) -> ImpactResult:
         """
         Results refer to 1 m2 of material
@@ -920,7 +920,7 @@ class LCACalculation:
 
         return impact_result
 
-    def __window_material(self, window_material: firepy.model.building.WindowMaterial) -> ImpactResult:
+    def __window_material(self, window_material: boblica.model.building.WindowMaterial) -> ImpactResult:
         """
         This should contain both frame and glazing, also impact data should contain the impact of frame and glazing too
         Results refer to 1 m2 of material
@@ -995,8 +995,8 @@ class LCACalculation:
 
         return impact_result
 
-    def __shade_or_blind_material(self, material: Union[firepy.model.building.ShadeMaterial,
-                                                        firepy.model.building.BlindMaterial]) -> ImpactResult:
+    def __shade_or_blind_material(self, material: Union[boblica.model.building.ShadeMaterial,
+                                                        boblica.model.building.BlindMaterial]) -> ImpactResult:
         """
         Results refer to 1 m2 of material
         :param material:
@@ -1082,7 +1082,7 @@ class LCACalculation:
 
         return impact_result
 
-    def __shading(self, shading: firepy.model.building.Shading, library: ObjectLibrary) -> ImpactResult:
+    def __shading(self, shading: boblica.model.building.Shading, library: ObjectLibrary) -> ImpactResult:
         """
         Results refer to 1 m2 of window (vertical) area
         :param shading:
@@ -1121,7 +1121,7 @@ class LCACalculation:
 
         return impact_result
 
-    def evaluate_construction_lifetimes(self, construction: firepy.model.building.Construction,
+    def evaluate_construction_lifetimes(self, construction: boblica.model.building.Construction,
                                         library: ObjectLibrary) -> Mapping[str, float]:
         # TODO how to know which is the core layer?
         # for now we just leave the innermost 2 layers as they are (assuming that the core is the second from inside)
@@ -1155,7 +1155,7 @@ class LCACalculation:
                 life_times[inner] = life_times[outer]
         return life_times
 
-    def __construction(self, construction: firepy.model.building.Construction, library: ObjectLibrary,
+    def __construction(self, construction: boblica.model.building.Construction, library: ObjectLibrary,
                        typ: str = 'opaque') -> ImpactResult:
         """
         Results refer to 1 m2 surface made of this construction
@@ -1200,7 +1200,7 @@ class LCACalculation:
                 material = library.get(layer)
 
                 # add shading only, not the window
-                if isinstance(material, (firepy.model.building.BlindMaterial, firepy.model.building.ShadeMaterial)):
+                if isinstance(material, (boblica.model.building.BlindMaterial, boblica.model.building.ShadeMaterial)):
                     # calculate the impact of the material
                     material_impact = self.calculate_impact(material)
 
@@ -1216,7 +1216,7 @@ class LCACalculation:
 
         return impact_result
 
-    def __building_surface(self, building_surface: firepy.model.building.BuildingSurface,
+    def __building_surface(self, building_surface: boblica.model.building.BuildingSurface,
                            library: ObjectLibrary) -> ImpactResult:
         """
         Impact refers to the total surface including impact of windows
@@ -1257,7 +1257,7 @@ class LCACalculation:
         #     else:
         #         return opaque_lca + window_lca
 
-    def __fenestration_surface(self, fenestration_surface: firepy.model.building.FenestrationSurface,
+    def __fenestration_surface(self, fenestration_surface: boblica.model.building.FenestrationSurface,
                                library: ObjectLibrary) -> ImpactResult:
         """
         Impact refers to the total surface including impact of shading
@@ -1297,7 +1297,7 @@ class LCACalculation:
 
         return impact_result
 
-    def __non_zone_surface(self, non_zone_surface: firepy.model.building.NonZoneSurface,
+    def __non_zone_surface(self, non_zone_surface: boblica.model.building.NonZoneSurface,
                            library: ObjectLibrary) -> ImpactResult:
         """
         Impact refers to the total surface
@@ -1322,7 +1322,7 @@ class LCACalculation:
 
         return impact_result
 
-    def __internal_mass(self, internal_mass: firepy.model.building.InternalMass,
+    def __internal_mass(self, internal_mass: boblica.model.building.InternalMass,
                         library: ObjectLibrary) -> ImpactResult:
         """
         Impact refers to the total
@@ -1347,7 +1347,7 @@ class LCACalculation:
 
         return impact_result
 
-    def __zone(self, zone: firepy.model.building.Zone, library: ObjectLibrary) -> ImpactResult:
+    def __zone(self, zone: boblica.model.building.Zone, library: ObjectLibrary) -> ImpactResult:
         """
         Impact refers to total of zone
         :param zone:
@@ -1378,7 +1378,7 @@ class LCACalculation:
 
         return impact_result
 
-    def __building(self, building: firepy.model.building.Building, demands: pd.DataFrame) -> ImpactResult:
+    def __building(self, building: boblica.model.building.Building, demands: pd.DataFrame) -> ImpactResult:
         """
         Impact refers to total of building
         :param building:
@@ -1420,7 +1420,7 @@ class LCACalculation:
 
         return impact_result
 
-    def __heating(self, heating: firepy.model.hvac.Heating, heating_demand: float) -> impact_results:
+    def __heating(self, heating: boblica.model.hvac.Heating, heating_demand: float) -> impact_results:
         """
         Impact refers to total RSP
         :param heating:
@@ -1522,7 +1522,7 @@ class LCACalculation:
 
         return impact_result
 
-    def __cooling(self, cooling: firepy.model.hvac.Cooling, cooling_demand: float) -> impact_results:
+    def __cooling(self, cooling: boblica.model.hvac.Cooling, cooling_demand: float) -> impact_results:
         """
         Impact refers to total RSP
         :param cooling:
@@ -1615,7 +1615,7 @@ class LCACalculation:
 
         return impact_result
 
-    def __lighting(self, lighting: firepy.model.hvac.Lighting, lighting_energy: float) -> impact_results:
+    def __lighting(self, lighting: boblica.model.hvac.Lighting, lighting_energy: float) -> impact_results:
         """
         Impact refers to total RSP
         :param lighting:
@@ -1708,7 +1708,7 @@ class LCACalculation:
 
         return impact_result
 
-    def __hvac(self, hvac: firepy.model.hvac.HVAC, demands: pd.DataFrame) -> impact_results:
+    def __hvac(self, hvac: boblica.model.hvac.HVAC, demands: pd.DataFrame) -> impact_results:
         """
         Impact refers to total reference period
         :param hvac:

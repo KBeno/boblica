@@ -18,14 +18,14 @@ import sqlalchemy
 from flask import Flask, request, jsonify
 from eppy.modeleditor import IDF
 
-from firepy.tools.optimization import Parameter
-from firepy.tools.serializer import IdfSerializer
-from firepy.calculation.energy import RemoteConnection, EnergyPlusSimulation, SteadyStateCalculation
-from firepy.model.building import Building
-from firepy.calculation.lca import ImpactResult, LCACalculation
-from firepy.calculation.cost import CostResult, CostCalculation
+from boblica.tools.optimization import Parameter
+from boblica.tools.serializer import IdfSerializer
+from boblica.calculation.energy import RemoteConnection, EnergyPlusSimulation, SteadyStateCalculation
+from boblica.model.building import Building
+from boblica.calculation.lca import ImpactResult, LCACalculation
+from boblica.calculation.cost import CostResult, CostCalculation
 
-app = Flask('firepy')
+app = Flask('boblica')
 
 if __name__ != '__main__':
     gunicorn_logger = logging.getLogger('gunicorn.error')
@@ -67,7 +67,7 @@ else:
         ep_port = os.environ['ENERGYPLUS_PORT']
 
         # Use default idd path
-        idd_path_string = '/firepy/energyplus.idd'
+        idd_path_string = '/boblica/energyplus.idd'
 
         db_host = os.environ['RESULT_DB_HOST']
         db_port = os.environ['RESULT_DB_PORT']

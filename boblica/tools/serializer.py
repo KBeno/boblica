@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from firepy.model.building import *
-# from firepy.tools.database import SqlDB
+from boblica.model.building import *
+# from boblica.tools.database import SqlDB
 import pandas as pd
 from eppy.modeleditor import IDF
 
@@ -117,7 +117,7 @@ class IdfSerializer:
         self.LifeCycleData = life_cycle_data  # DataFrame
         self._db = db  # SqlDB instance to connect to the database if no ready results are supplied # TODO
 
-        # collect initial values from idf for objects where the list of properties is more detailed than in firepy
+        # collect initial values from idf for objects where the list of properties is more detailed than in boblica
         self.idf_values = {
             'window_materials': {},
             'shade_materials': {},

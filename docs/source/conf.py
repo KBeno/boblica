@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path('../../').absolute()))
 
-from firepy import __version__
+from boblica import __version__
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information

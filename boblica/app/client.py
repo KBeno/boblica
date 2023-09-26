@@ -10,10 +10,10 @@ import dill
 import pandas as pd
 from eppy.modeleditor import IDF
 
-from firepy.tools.optimization import Parameter
-from firepy.model.building import Building
-from firepy.calculation.lca import LCACalculation
-from firepy.calculation.cost import CostCalculation
+from boblica.tools.optimization import Parameter
+from boblica.model.building import Building
+from boblica.calculation.lca import LCACalculation
+from boblica.calculation.cost import CostCalculation
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +84,8 @@ class RemoteClient:
         :param epw: Path to epw file for weather data for simulation
         :param weather_data: Path to csv weather data for steady state energy calculation
         :param idf: eppy IDF model of the building
-        :param model: converted firepy model of the building
-        :param parameters: dict of firepy Parameters to use for parametric definition
+        :param model: converted boblica model of the building
+        :param parameters: dict of boblica Parameters to use for parametric definition
         :param lca_calculation:
         :param cost_calculation:
         :param energy_calculation: 'simulation' or 'steady_state'

@@ -1,11 +1,11 @@
 __pycache__/
 
-firepy/tools/database.py
+boblica/tools/database.py
 examples/
-firepy/app/dash.py
-firepy/app/dashboard.py
-firepy/setup/config.ini
-firepy/setup/functions.py
+boblica/app/dash.py
+boblica/app/dashboard.py
+boblica/setup/config.ini
+boblica/setup/functions.py
 
 # Virtualenv source directory
 venv/
