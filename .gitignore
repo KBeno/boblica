@@ -6,3 +6,9 @@ firepy/app/dash.py
 firepy/app/dashboard.py
 firepy/setup/config.ini
 firepy/setup/functions.py
+
+# Virtualenv source directory
+venv/
+
+# Documentation build output directory
+docs/build/

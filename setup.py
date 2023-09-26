@@ -1,5 +1,6 @@
 import pathlib
 from setuptools import setup
+from firepy import __version__
 
 # The directory containing this file
 HERE = pathlib.Path(__file__).parent
@@ -10,7 +11,7 @@ README = (HERE / 'README.md').read_text()
 
 setup(
     name='firepy',
-    version='0.1.1',
+    version=__version__,
     description='Building Life Cycle Assessment and Optimisation',
     long_description=README,
     long_description_content_type='text/markdown',
