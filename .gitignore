@@ -12,3 +12,6 @@ venv/
 
 # Documentation build output directory
 docs/build/
+
+# PyCharm
+.idea/
