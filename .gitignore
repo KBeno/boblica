@@ -7,8 +7,11 @@ boblica/app/dashboard.py
 boblica/setup/config.ini
 boblica/setup/functions.py
 
-# Virtualenv source directory
+# Virtualenv source directory for develoment
 venv/
+
+# Development sandbox files
+sandbox/
 
 # Documentation build output directory
 docs/build/

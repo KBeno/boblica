@@ -31,21 +31,23 @@ setup(
         'boblica.tools',
     ],
     install_requires=[
-        'dill==0.3.1.1',
-        'eppy==0.5.52',
-        'esoreader==1.2.3',
-        'Flask==1.1.1',
-        'matplotlib==3.1.3',
-        'numpy==1.17.3',
-        'olca-ipc==0.0.8',
-        'pandas==0.25.2',
-        'redis==3.3.11',
-        'requests==2.22.0',
-        'SQLAlchemy==1.3.11',
-        'Jinja2==2.10.3',
-        'MarkupSafe==1.1.1',
-        'itsdangerous==1.1.0',
-        'psycopg2-binary==2.8.4'
+        'dill>=0.3.1.1',
+        'eppy>=0.5.52',
+        'esoreader>=1.2.3',
+        'matplotlib>=3.1.3',
+        'pandas>=0.25.2',
+        'requests>=2.22.0',
+        'SQLAlchemy>=1.3.11'
     ],
+    extras_require={
+        'server': [
+            'Flask==1.1.1',
+            'redis==3.3.11',
+            'psycopg2-binary==2.8.4'
+        ],
+        'openLCA': [
+            'olca-ipc==0.0.8',
+        ]
+    },
     python_requires='>=3.7',
 )

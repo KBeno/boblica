@@ -7,7 +7,8 @@ import uuid
 from pathlib import Path
 from typing import MutableMapping, Mapping, Union, Callable, Tuple, List
 
-from eppy.modeleditor import  IDF
+import sqlalchemy
+from eppy.modeleditor import IDF
 import pandas as pd
 
 from boblica.calculation.energy import EnergyPlusSimulation, SteadyStateCalculation
@@ -33,7 +34,7 @@ class LocalClient:
         self.cost_calculation = None
         self.energy_calculation = None
         # extras for local mode
-        self._results = None
+        self._result_db = None
         self.update_model = None
         self.evaluate = None
 
@@ -81,6 +82,7 @@ class LocalClient:
         self.simulation_output_folder = None
         self.simulation = None
         self.steady_state = None
+        self._energy_plus_path = None
 
     @property
     def idd_path(self):
@@ -93,15 +95,15 @@ class LocalClient:
         self.idf_parser = IdfSerializer(idd_path=idd_path)
 
     @property
-    def results(self) -> pd.DataFrame:
-        return self._results
+    def result_db(self) -> sqlalchemy.engine.Engine:
+        return self._result_db
 
-    @results.setter
-    def results(self, df: pd.DataFrame):
-        self._results = df
+    @result_db.setter
+    def result_db(self, connection_string: str):
+        self._result_db = sqlalchemy.create_engine(connection_string)
 
     @property
-    def energy_plus_path(self) -> str:
+    def energy_plus_path(self) -> Path:
         return self._energy_plus_path
 
     @energy_plus_path.setter
@@ -176,8 +178,15 @@ class LocalClient:
             self.cost_calculation = cost_calculation
 
         if init_db:
-            logger.debug('Initiating result DataFrame')
-            self._results = pd.DataFrame()
+            logger.debug('Initiating result Database')
+            # Setup result database with default location and name
+            self.result_db = f'sqlite:///{self.name}.db'
+            inspector = sqlalchemy.inspect(self.result_db)  # TODO when updated to SQLAlchemy 1.4
+            # if self.result_db.has_table(self.name):  # TODO when older version of SQLAlchemy is used
+            if inspector.has_table(self.name):
+                logger.info(f'Existing database has table named {self.name}, results will be appended')
+            else:
+                logger.info(f'New table named {self.name} will be created in database {self.name}.db')
 
         if energy_calculation:
             if energy_calculation not in ['simulation', 'steady_state']:
@@ -205,7 +214,7 @@ class LocalClient:
     def calculate(self, parameters: MutableMapping[str, Union[float, int, str]], name=None):
         """
         Calculate the impact based on the parameters
-        Model is updated, calculations are made and results are written into a local result DataFrame
+        Model is updated, calculations are made and results are written into a local SQLite Database
         This is the entry point for external optimization algorithms
 
         :param name: Name of the calculation setup
@@ -242,23 +251,23 @@ class LocalClient:
             exec_time = float('inf')
 
         # -------------------- WRITE RESULTS TO DATABASE --------------------
-        logger.info('Saving results to result DataFrame for: {id}'.format(id=sim_id))
+        logger.info('Saving results for: {id}'.format(id=sim_id))
 
         # collect updated parameters
         data = {p.name: p.value for p in parameters.values()}
 
         # Create pandas Series from parameters and results
         result_series = pd.Series(data=data, name=sim_id)
-        result_series = result_series.append(result)
+        result_series = pd.concat([result_series, result])
         result_series['calculation_id'] = sim_id
         result_series['calculation_time'] = exec_time
         result_series['timestamp'] = time.perf_counter()
         result_frame = result_series.to_frame().transpose()
 
-        if self.results is None:
-            self.results = result_frame
+        if self.result_db is not None:
+            result_frame.to_sql(name=self.name, con=self.result_db, if_exists='append', index=False)
         else:
-            self.results = self.results.append(result_frame, ignore_index=True)
+            logger.warning("Results not persisted. Please set the `.result_db` property or run `.setup()`")
 
         return result.to_dict()
 
@@ -280,9 +289,9 @@ class LocalClient:
         msg = None
 
         if calculation_id is not None:
-            try:
-                db_values = self.results.loc[calculation_id, :]
-            except KeyError:
+            query = f'SELECT * FROM "{self.name}" WHERE calculation_id="{calculation_id}"'
+            db_values = pd.read_sql_query(query, self.result_db, index_col='calculation_id')
+            if db_values.emtpy:
                 msg = 'No previous calculation found for id: {id}'.format(id=calculation_id)
                 return self.parameters, msg
         else:
@@ -537,12 +546,15 @@ class LocalClient:
 
         if input('Are you sure? (y/n): ') == 'y':
             if target == 'results' or target is None:
-                self._results = None
+                query = f'DELETE FROM "{self.name}"'
+                self.result_db.execute(query)
             if target == 'individuals':
                 if calc_id is None:
-                    self._results = pd.DataFrame()
+                    query = f'DELETE FROM "{self.name}"'
+                    self.result_db.execute(query)
                 else:
-                    self._results = self.results[self.results["calculation_id"] != calc_id]
+                    query = f'DELETE FROM "{self.name}" WHERE calculation_id = "{calc_id}"'
+                    self.result_db.execute(query)
             if target == 'simulations' or target is None:
                 shutil.rmtree(f'{self.simulation_output_folder}_{self.name}')
             return 'OK'
